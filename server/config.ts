@@ -39,9 +39,29 @@ export function demoScale(argv: string[], env: NodeJS.ProcessEnv): DemoScale | n
   return { floors: clamp(floors ?? 2, DEMO_MAX.floors), agents: clamp(agents ?? 6, DEMO_MAX.agents) };
 }
 
+/** `--nano <url>` (or CUBEFARM_NANO_URL): nano-workforce runs the work and the office shows it (server/nano/). */
+function nanoUrl(argv: string[], env: NodeJS.ProcessEnv): string | null {
+  const i = argv.findIndex((a) => a === '--nano' || a.startsWith('--nano='));
+  const raw = i < 0 ? env.CUBEFARM_NANO_URL : argv[i].includes('=') ? argv[i].slice('--nano='.length) : argv[i + 1];
+  return raw && /^https?:\/\//.test(raw) ? raw : null;
+}
+// With --demo too: fake GitHub, real nano-workforce (or a fake one, scripts/fake-nano.mjs), for trying the office out.
+export const NANO_URL = nanoUrl(process.argv, process.env);
+export const NANO = NANO_URL
+  ? {
+      url: NANO_URL,
+      secret: process.env.CUBEFARM_NANO_SECRET || process.env.NANO_PR_WEBHOOK_SECRET || undefined,
+      pollMs: Math.max(1000, Number(process.env.CUBEFARM_NANO_POLL_MS) || 5000),
+      baseBranch: process.env.CUBEFARM_NANO_BASE_BRANCH ?? '',
+    }
+  : null;
+
 export const DEMO_SCALE = DEMO ? demoScale(process.argv, process.env) : null;
 // A big company keeps its own state, so it never mixes with the usual demo's.
-export const STATE_FILE = path.join(HOME_DIR, DEMO ? (DEMO_SCALE ? `demo-${DEMO_SCALE.floors}x${DEMO_SCALE.agents}-state.json` : 'demo-state.json') : 'state.json');
+export const STATE_FILE = path.join(
+  HOME_DIR,
+  (DEMO ? (DEMO_SCALE ? `demo-${DEMO_SCALE.floors}x${DEMO_SCALE.agents}-` : 'demo-') : '') + (NANO_URL ? 'nano-state.json' : 'state.json'),
+);
 
 /** A port from the environment, or the fallback when it's unset or not a usable port. */
 export function envPort(value: string | undefined, fallback: number): number {

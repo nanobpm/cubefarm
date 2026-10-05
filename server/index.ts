@@ -7,7 +7,7 @@ import { WebSocketServer } from 'ws';
 import { z } from 'zod';
 import { CLIP_MAX_BYTES, CLIP_TOO_BIG } from '../shared/clipLimits.ts';
 import { DAY_PARTS } from '../shared/speech.ts';
-import { DEMO, DEMO_SCALE, PORT, STATE_FILE, VERSION, WORKSPACE_ROOT } from './config.ts';
+import { DEMO, DEMO_SCALE, NANO, PORT, STATE_FILE, VERSION, WORKSPACE_ROOT } from './config.ts';
 import { realBackend } from './backend.ts';
 import { handleHook, handleMcp, setOfficeUrl } from './cliRunner.ts';
 import { createDemoBackend } from './demo.ts';
@@ -18,8 +18,13 @@ import { screenStatus } from './screenReply.ts';
 import { parseSendBackNote } from './sendBack.ts';
 import { PresenceHub } from './presence.ts';
 import { HttpError, Swarm } from './swarm.ts';
+import { nanoClient } from './nano/client.ts';
 
-const swarm = new Swarm(DEMO ? createDemoBackend(DEMO_SCALE) : realBackend);
+const swarm = new Swarm(
+  DEMO ? createDemoBackend(DEMO_SCALE) : realBackend,
+  NANO ? { api: nanoClient(NANO.url, { secret: NANO.secret }), config: { url: NANO.url, pollMs: NANO.pollMs, baseBranch: NANO.baseBranch } } : undefined,
+);
+if (NANO) console.log(`nano-workforce mode: ${NANO.url} (polling every ${NANO.pollMs} ms)`);
 // Who else is in the 3D office (shared presence): relayed between tabs over /ws, never saved. The demo adds fake visitors.
 const presence = new PresenceHub({ demo: DEMO });
 // Sessions the office picks back up while it starts need the address their CLIs call back on before it listens.
