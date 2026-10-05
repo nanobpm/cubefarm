@@ -16,6 +16,8 @@ export function parseRef(ref: string | undefined | null): { repo: string; number
 export interface Seat {
   instance: string;
   name: string;
+  /** The model / harness family it declared (e.g. "Opus 4.8"), or ''. */
+  family: string;
   /** The floor's repo id; null: not on any connected floor's work (it stays where it last was). */
   repoId: string | null;
   status: AgentStatus;
@@ -33,10 +35,15 @@ export interface Seat {
 
 const FIX_STEPS = /pr-review|review|fix-ci|rebase|trial-merge|converge|merge/i;
 
-/** A human name for a worker from its identity (e.g. "fleet/copilot-2" → "copilot-2"). */
+/**
+ * A human name for a worker. Its identity is often just an address (127.0.0.1), so the instance id
+ * (`<host>-<harness>-<hex>`, e.g. joshs-macbook-pro-copilot-31c33e5f) names it: "copilot 31c3".
+ */
 export function workerName(w: NanoWorker): string {
-  const raw = (w.identity || w.instance).split(/[/:@]/).filter(Boolean).pop() ?? w.instance;
-  return raw.slice(0, 24);
+  const id = w.identity && !/^[\d.:]+$|^localhost$/i.test(w.identity) ? w.identity : w.instance;
+  const last = id.split(/[/:@\s]+/).filter(Boolean).pop() ?? id;
+  const m = /^(?:.*-)?([^-]+)-([0-9a-f]{6,})$/i.exec(last);
+  return (m ? `${m[1]} ${m[2].slice(0, 4)}` : last).slice(0, 24);
 }
 
 /** The repo id on a connected floor for `repo`, matched case-insensitively. */
@@ -52,6 +59,7 @@ export function seatsFor(supply: NanoSupply, prs: readonly NanoPr[], repoIds: re
     const seat: Seat = {
       instance: w.instance,
       name: workerName(w),
+      family: [w.family, w.host].filter((x) => x && x !== 'fake').join(' @ ').slice(0, 60),
       repoId: null,
       status: !w.live ? 'stopped' : job ? 'working' : 'idle',
       task: null,
@@ -65,9 +73,10 @@ export function seatsFor(supply: NanoSupply, prs: readonly NanoPr[], repoIds: re
     };
     if (!job) return seat;
     const step = `${job.bpmnProcessId ?? ''} ${job.elementId ?? ''}`;
-    seat.task = FIX_STEPS.test(step) ? 'fix' : 'issue';
     // The PR it holds a lease on, else the plan / epic its job belongs to.
-    const pr = prs.find((p) => p.activeWorker === w.instance || p.activeWorker === w.identity);
+    const pr = prs.find((p) => p.activeWorker === w.instance);
+    seat.task = FIX_STEPS.test(step) || (pr && !step.trim()) ? 'fix' : 'issue';
+    if (pr && seat.doing === 'working') seat.doing = `${pr.status} · round ${pr.round}`;
     const ref = pr ? { repo: pr.repo, number: pr.number } : parseRef(job.planKey);
     if (ref) seat.repoId = floorId(ref.repo, repoIds);
     if (pr) {
@@ -90,7 +99,7 @@ export function seatsFor(supply: NanoSupply, prs: readonly NanoPr[], repoIds: re
 
 /** The short handle the manager types to answer one (the end of its user-task key). */
 export function escalationRef(e: Pick<NanoEscalation, 'userTaskKey'>): string {
-  return e.userTaskKey.slice(-5);
+  return e.userTaskKey.length <= 8 ? e.userTaskKey : e.userTaskKey.slice(-6);
 }
 
 /** The deployed forms' choice fields (nano-workforce resources/forms/*.form), by the form they belong to. */
@@ -161,4 +170,76 @@ export function chunkLines(chunk: string): string[] {
     .map((l) => l.split('\r').pop() ?? '')
     .map((l) => l.trimEnd())
     .filter((l) => l.length > 0);
+}
+
+/** A line for a worker's screen. */
+export interface ScreenLine {
+  kind: 'text' | 'tool' | 'error';
+  text: string;
+  tool?: string;
+}
+
+const NOISE = /^\[usage_update\]$|^⚙ \[tool: [\w-]+\]$/;
+
+/**
+ * nano-workforce transcripts are JSON lines (`{"nwfTranscriptEvent":1,"kind":"message"|"tool-call"|"tool-result",…}`)
+ * with assistant text streamed as fragments, mixed with raw harness output. Turns chunks into screen lines; the
+ * text of a message still being streamed stays in `pending` until a newline or the next event ends it.
+ */
+export class TranscriptReader {
+  private pending = '';
+
+  read(chunks: string[]): ScreenLine[] {
+    const out: ScreenLine[] = [];
+    const flush = () => {
+      for (const t of chunkLines(this.pending)) out.push({ kind: 'text', text: t.trimStart() });
+      this.pending = '';
+    };
+    for (const raw of chunks.join('').split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      let ev: { nwfTranscriptEvent?: number; kind?: string; role?: string; text?: string; name?: string; ok?: boolean; content?: string; args?: Record<string, unknown> } | null = null;
+      if (line.startsWith('{"nwfTranscriptEvent"')) {
+        try {
+          ev = JSON.parse(line);
+        } catch {
+          ev = null;
+        }
+      }
+      if (!ev) {
+        if (NOISE.test(line)) continue;
+        flush();
+        for (const t of chunkLines(raw)) out.push({ kind: 'text', text: t });
+        continue;
+      }
+      if (ev.kind === 'message') {
+        if (ev.role && ev.role !== 'assistant') continue;
+        this.pending += ev.text ?? '';
+        const nl = this.pending.lastIndexOf('\n');
+        if (nl >= 0) {
+          const done = this.pending.slice(0, nl);
+          this.pending = this.pending.slice(nl + 1);
+          for (const t of chunkLines(done)) out.push({ kind: 'text', text: t.trimStart() });
+        }
+        continue;
+      }
+      flush();
+      if (ev.kind === 'tool-call') {
+        const name = ev.name ?? 'tool';
+        // Some harnesses name the tool only ("bash"): its command or path says what it's doing.
+        const arg = ev.args?.command ?? ev.args?.path ?? ev.args?.file_path ?? ev.args?.pattern;
+        const text = !name.includes(' ') && typeof arg === 'string' ? `${name}: ${arg.split('\n')[0]}` : name;
+        out.push({ kind: 'tool', text: text.slice(0, 200), tool: name.split(' ')[0] });
+      }
+      else if (ev.kind === 'tool-result' && ev.ok === false) out.push({ kind: 'error', text: `✗ ${String(ev.content ?? 'tool failed').slice(0, 200)}` });
+    }
+    return out;
+  }
+
+  /** The text of a message the worker is still writing, ended (its job finished, or it's been a while). */
+  end(): ScreenLine[] {
+    const lines = chunkLines(this.pending).map((text) => ({ kind: 'text' as const, text: text.trimStart() }));
+    this.pending = '';
+    return lines;
+  }
 }

@@ -58,7 +58,7 @@ import { DEFAULT_THEME_SETTINGS, dueGreeting, themeSettings } from '../shared/th
 import { CEO_ID, DEFAULT_DOG_NAME, INSTALL_STEP } from '../shared/types.ts';
 import { NanoBridge, type NanoConfig } from './nano/bridge.ts';
 import type { NanoApi } from './nano/client.ts';
-import type { Seat } from './nano/mirror.ts';
+import type { ScreenLine, Seat } from './nano/mirror.ts';
 import type {
   AgentActivity,
   AgentCli,
@@ -4482,9 +4482,9 @@ export class Swarm {
         const a = this.state.agents.find((x) => x.nanoWorker === instance);
         if (a) this.fireAgent(a.id, true);
       },
-      log: (instance: string, lines: string[]) => {
+      log: (instance: string, lines: ScreenLine[]) => {
         const a = this.state.agents.find((x) => x.nanoWorker === instance);
-        if (a) this.appendLog(a, lines.map((text) => ({ kind: 'text' as const, text })));
+        if (a) this.appendLog(a, lines.map((l) => ({ kind: l.kind, text: l.text, tool: l.tool })));
       },
       phone: (text: string) => void this.postMessage('office', text),
       needsHuman: (title: string, body: string) => this.notifier.notify('needsHuman', title, body, title),
@@ -4499,7 +4499,7 @@ export class Swarm {
     if (!a) {
       this.nanoSeating = true;
       try {
-        const v = this.hireAgent(floorId, { name: seat.name, title: 'nano-workforce worker' });
+        const v = this.hireAgent(floorId, { name: seat.name, title: seat.family || 'nano-workforce worker' });
         a = this.agent(v.id);
       } catch (err) {
         console.warn(`nano: no desk for ${seat.name}: ${(err as Error).message}`);

@@ -4,7 +4,7 @@
  * Polls the app's REST API; the office (Swarm) applies what it hears through NanoHost.
  */
 import type { NanoApi, NanoEscalation, NanoPr } from './client.ts';
-import { chunkLines, escalationMessage, escalationRef, parseAnswer, seatsFor, type Seat } from './mirror.ts';
+import { escalationMessage, escalationRef, parseAnswer, seatsFor, TranscriptReader, type ScreenLine, type Seat } from './mirror.ts';
 
 export interface NanoHost {
   /** The connected floors' repo ids (owner/name). */
@@ -14,7 +14,7 @@ export interface NanoHost {
   /** A worker that's gone from nano-workforce: their desk empties. */
   unseat(instance: string): void;
   /** Lines for a worker's screen. */
-  log(instance: string, lines: string[]): void;
+  log(instance: string, lines: ScreenLine[]): void;
   /** A message on the manager's phone. */
   phone(text: string): void;
   /** The manager should hear about this one (notifications). */
@@ -35,6 +35,8 @@ export class NanoBridge {
   private ticking = false;
   private seated = new Set<string>();
   private offsets = new Map<string, number>();
+  private readers = new Map<string, TranscriptReader>();
+  private following = new Map<string, string>(); // worker instance → the stream it's on
   private told = new Set<string>(); // escalations already on the phone
   private open: NanoEscalation[] = [];
   private prs: NanoPr[] = [];
@@ -86,6 +88,12 @@ export class NanoBridge {
         this.seated.delete(gone);
       }
       this.escalations(escalations);
+      for (const s of seats) {
+        const was = this.following.get(s.instance);
+        if (was && was !== s.stream) this.endStream(s.instance, was);
+        if (s.stream) this.following.set(s.instance, s.stream);
+        else this.following.delete(s.instance);
+      }
       await Promise.all(seats.filter((s) => s.stream).map((s) => this.follow(s.instance, s.stream as string)));
     } catch (err) {
       const msg = (err as Error).message;
@@ -107,14 +115,25 @@ export class NanoBridge {
     for (const k of [...this.told]) if (!list.some((e) => e.userTaskKey === k)) this.told.delete(k);
   }
 
-  /** New terminal output on a worker's stream since the last poll. */
+  /** New output on a worker's stream since the last poll. The first look starts near its end, not its beginning. */
   private async follow(instance: string, stream: string) {
     const from = this.offsets.get(stream) ?? 0;
     const t = await this.api.transcript(stream, from).catch(() => null);
-    if (!t || t.entries.length === 0) return;
+    if (!t) return;
     this.offsets.set(stream, t.nextOffset);
-    const lines = t.entries.flatMap((e) => chunkLines(e.chunk));
+    if (t.entries.length === 0) return;
+    let reader = this.readers.get(stream);
+    if (!reader) this.readers.set(stream, (reader = new TranscriptReader()));
+    const lines = reader.read(t.entries.map((e) => e.chunk));
     if (lines.length) this.host.log(instance, lines.slice(-MAX_LINES_PER_TICK));
+  }
+
+  /** A worker moved off a stream (its job ended): what it was still saying, then forget the stream. */
+  private endStream(instance: string, stream: string) {
+    const rest = this.readers.get(stream)?.end() ?? [];
+    if (rest.length) this.host.log(instance, rest);
+    this.readers.delete(stream);
+    this.offsets.delete(stream);
   }
 
   /** Hand an issue to the fleet: nano-workforce plans it and fans it out. */

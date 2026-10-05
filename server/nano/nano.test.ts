@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { NanoBridge, type NanoHost } from './bridge.ts';
 import type { NanoApi, NanoEscalation, NanoPr, NanoSupply } from './client.ts';
 import { nanoClient } from './client.ts';
-import { chunkLines, escalationMessage, escalationRef, parseAnswer, parseRef, seatsFor } from './mirror.ts';
+import { chunkLines, escalationMessage, escalationRef, parseAnswer, parseRef, seatsFor, TranscriptReader, workerName } from './mirror.ts';
 
 const pr = (over: Partial<NanoPr> = {}): NanoPr => ({
   prKey: 'k',
@@ -79,6 +79,51 @@ describe('mirror', () => {
     expect(parseAnswer(`answer ${escalationRef(p)} rebase on main`, [p])).toMatchObject({ variables: { answer: 'rebase on main' } });
   });
 
+  it('names workers from their instance when the identity is an address', () => {
+    const w = { instance: 'joshs-macbook-pro-copilot-31c33e5f', identity: '127.0.0.1', stream: '', jobKeys: [], live: true, staleMs: 0 };
+    expect(workerName(w)).toBe('copilot 31c3');
+    expect(workerName({ ...w, identity: 'fleet/claude-1' })).toBe('claude-1');
+    expect(workerName({ ...w, instance: 'omarchy-nano-coder-8f20a93d' })).toBe('coder 8f20');
+  });
+
+  it('seats a worker on the PR it holds when the job has no context (live servers)', () => {
+    const s = seatsFor(
+      { workers: [{ instance: 'h-copilot-ab12cd34', identity: '127.0.0.1', stream: '', family: 'Opus 4.8', jobKeys: ['9'], live: true, staleMs: 0 }], correlations: [{ jobKey: '9', stream: '34:h-copilot-ab12cd34/9' }] },
+      [pr({ activeWorker: 'h-copilot-ab12cd34', status: 'converging', round: 13 })],
+      ['acme/app'],
+    )[0];
+    expect(s).toMatchObject({ repoId: 'acme/app', task: 'fix', prNumber: 45, stream: '34:h-copilot-ab12cd34/9', doing: 'converging · round 13', family: 'Opus 4.8' });
+  });
+
+  it('reads nwf transcript events', () => {
+    const r = new TranscriptReader();
+    const ev = (o: object) => `${JSON.stringify({ nwfTranscriptEvent: 1, ...o })}\n`;
+    const lines = r.read([
+      ev({ kind: 'message', role: 'assistant', text: 'Looking at ' }),
+      ev({ kind: 'message', role: 'assistant', text: 'the code.\nNow' }),
+      '[usage_update]\n',
+      '⚙ [tool: toolu_01ABC]\n',
+      ev({ kind: 'tool-call', name: 'Viewing src/a.rs', callId: 'x', args: {} }),
+      ev({ kind: 'tool-result', callId: 'x', ok: true, content: 'lots' }),
+      ev({ kind: 'tool-call', name: 'bash', callId: 'z', args: { command: 'gh pr view 38\n--json x' } }),
+      ev({ kind: 'tool-result', callId: 'y', ok: false, content: 'denied' }),
+      ev({ kind: 'message', role: 'assistant', text: ' fixing it' }),
+    ]);
+    expect(lines).toEqual([
+      { kind: 'text', text: 'Looking at the code.' },
+      { kind: 'text', text: 'Now' },
+      { kind: 'tool', text: 'Viewing src/a.rs', tool: 'Viewing' },
+      { kind: 'tool', text: 'bash: gh pr view 38', tool: 'bash' },
+      { kind: 'error', text: '✗ denied' },
+    ]);
+    expect(r.end()).toEqual([{ kind: 'text', text: 'fixing it' }]);
+  });
+
+  it('uses short user-task keys whole', () => {
+    expect(escalationRef({ userTaskKey: '233492' })).toBe('233492');
+    expect(escalationRef({ userTaskKey: '2251799813690001' })).toBe('690001');
+  });
+
   it('cleans terminal bytes', () => {
     expect(chunkLines('\u001b[32mok\u001b[0m\r\nspin 1\rspin 2\n\n')).toEqual(['ok', 'spin 2']);
   });
@@ -123,7 +168,7 @@ describe('bridge', () => {
     await bridge.tick();
     expect(host.seat).toHaveBeenCalledTimes(8);
     expect(host.log).toHaveBeenCalledTimes(1);
-    expect(host.log).toHaveBeenCalledWith('w1', ['hello', 'world']);
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'hello' }, { kind: 'text', text: 'world' }]);
     expect(host.phone).toHaveBeenCalledTimes(1);
     expect(host.needsHuman).toHaveBeenCalledTimes(1);
   });
