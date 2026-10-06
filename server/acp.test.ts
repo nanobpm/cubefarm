@@ -5,7 +5,9 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { acpArgs, additionalDirectories, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, withTimeout } from './acp.ts';
-import { firstPrompt, handleOfficeCall } from './acpRunner.ts';
+import { firstPrompt, handleOfficeCall, startAcpSession } from './acpRunner.ts';
+import type { SessionCallbacks, SessionResult } from './agentRunner.ts';
+import { HOME_DIR } from './config.ts';
 
 const execFileP = promisify(execFile);
 
@@ -82,6 +84,34 @@ describe('acp', () => {
       await expect(execFileP(process.execPath, [file, 'company_status', '-b', b64], { env: { ...process.env, CUBEFARM_OFFICE_URL: 'http://127.0.0.1:1' } })).rejects.toThrow(/could not be reached/);
     } finally {
       fs.rmSync(path.dirname(file), { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
+
+  it('ends the session without spawning the harness when the office command cannot be written', async () => {
+    // Regression (Copilot review): a failed helper write used to only log, then spawn a CEO whose mandatory first
+    // company_status call was guaranteed to fail (or hit a stale helper). A file where bin/ belongs makes mkdir fail.
+    const blocker = path.join(HOME_DIR, 'bin');
+    fs.mkdirSync(HOME_DIR, { recursive: true });
+    fs.writeFileSync(blocker, 'x');
+    const result = new Promise<SessionResult>((done) => {
+      const cb: SessionCallbacks = {
+        log: () => undefined,
+        tool: () => undefined,
+        sessionId: () => undefined,
+        browserUrl: () => undefined,
+        screenshot: () => undefined,
+        finished: done,
+      };
+      const handle = startAcpSession('nano-coder', { cwd: os.tmpdir(), prompt: 'p', systemAppend: 's', model: '', effort: 'high', browserTesting: false, additionalDirectories: [], role: 'ceo' }, cb);
+      // The finish is deferred so the caller can install this handle first; it must be a safe no-op, not a crash.
+      handle.stop();
+    });
+    try {
+      const r = await result;
+      expect(r.ok).toBe(false);
+      expect(r.errors.join(' ')).toContain("Couldn't write the office command");
+    } finally {
+      fs.rmSync(blocker, { force: true, maxRetries: 3 });
     }
   });
 });

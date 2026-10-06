@@ -91,3 +91,44 @@ describe('nano CEO queue revalidation', () => {
     expect(priv.state.ceo.queue.some((j) => j.kind === 'chat')).toBe(true);
   });
 });
+
+// Regression (Copilot review): agent_detail used to hard-code the CEO's codingAgent/model/effort as Claude's, so an
+// ACP CEO (or anyone inspecting it) read the wrong runtime configuration. It now follows the "Runs on" harness.
+describe('agent_detail reports the CEO harness, not always Claude', () => {
+  function setup() {
+    const swarm = new Swarm(createDemoBackend());
+    (swarm as unknown as { ensureCeo(i: unknown[]): void }).ensureCeo([]);
+    const priv = swarm as unknown as {
+      state: { agents: { id: string; role: string; model: string; effort: string }[]; settings: { ceoHarness: string; defaultEffort: string } };
+      agentDetail(x: { agent_id: string }): string;
+    };
+    const ceo = priv.state.agents.find((a) => a.role === 'ceo')!;
+    return { priv, ceo, detail: () => JSON.parse(priv.agentDetail({ agent_id: ceo.id })) as { codingAgent: string; model: string; effort: string } };
+  }
+
+  it('reports Claude Code and its defaults on the Claude harness', () => {
+    const { priv, ceo, detail } = setup();
+    priv.state.settings.ceoHarness = 'claude';
+    ceo.model = '';
+    ceo.effort = '';
+    expect(detail()).toMatchObject({ codingAgent: 'claude', model: 'claude-opus-5-5', effort: 'xhigh' });
+  });
+
+  it('reports the ACP harness and its own default for an empty model', () => {
+    const { priv, ceo, detail } = setup();
+    priv.state.settings.ceoHarness = 'nano-coder';
+    ceo.model = '';
+    ceo.effort = '';
+    const d = detail();
+    expect(d.codingAgent).toBe('nano-coder');
+    expect(d.model).toBe('the harness default');
+    expect(d.effort).toBe(''); // ACP sessions ignore effort (acpArgs passes none), so nothing is invented
+  });
+
+  it('reports the configured ACP model when one is set', () => {
+    const { priv, ceo, detail } = setup();
+    priv.state.settings.ceoHarness = 'copilot';
+    ceo.model = 'github-copilot/kimi-k3';
+    expect(detail().model).toBe('github-copilot/kimi-k3');
+  });
+});

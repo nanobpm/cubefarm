@@ -83,7 +83,11 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
     fs.mkdirSync(path.dirname(OFFICE_COMMAND), { recursive: true });
     fs.writeFileSync(OFFICE_COMMAND, OFFICE_COMMAND_SOURCE);
   } catch (err) {
-    cb.log([{ kind: 'error', text: `Couldn't write the office command: ${(err as Error).message}` }]);
+    // Without the office command the CEO's mandatory first company_status call (and every later office action) can
+    // only fail — or worse, silently hit a stale helper from an older version. End the session before spawning the
+    // harness. Deferred like the not-installed path: Swarm installs the returned handle before the callback runs.
+    queueMicrotask(() => finish({ ok: false, text: '', errors: [`Couldn't write the office command: ${(err as Error).message}`] }));
+    return { send: () => undefined, stop: () => undefined };
   }
 
   // Same rule as every agent: no Claude credentials or config from the office's own environment.

@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 // server-renderable: the store hook reads its creation-time snapshot under renderToStaticMarkup.
 vi.mock('./sfx', () => ({ alarm: vi.fn(), audioUnlocked: () => false, chirp: vi.fn(), cue: vi.fn() }));
 
-const { ModelInput } = await import('./AgentSettings');
+const { ModelInput, modelKey } = await import('./AgentSettings');
 const { useStore } = await import('../store');
 type Agent = import('../store').Agent;
 type SwarmSettings = import('../../../shared/types').SwarmSettings;
@@ -65,5 +65,15 @@ describe("the CEO's model field", () => {
     const html = field(harness);
     expect(html).not.toContain('claude-opus-5-5');
     expect(html).not.toContain('<option');
+  });
+
+  it('keys the uncontrolled input by the harness, so switching ACP harnesses remounts it', () => {
+    // Regression (Copilot review): both ACP harnesses map to one synthetic cli, so keying by it kept nano-coder's
+    // unblurred text mounted for Copilot's field — the next blur saved the old harness's model into the new one.
+    const worker = { ...ceo, role: 'dev' as const };
+    expect(modelKey(ceo, 'opencode', settings('nano-coder'))).toBe('nano-coder');
+    expect(modelKey(ceo, 'opencode', settings('copilot'))).toBe('copilot');
+    expect(modelKey(ceo, 'claude', settings('claude'))).toBe('claude');
+    expect(modelKey(worker, 'codex', settings('copilot'))).toBe('codex'); // a worker's key is still their coding agent
   });
 });

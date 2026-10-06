@@ -23,6 +23,13 @@ export const workerCli = (a: Pick<Agent, 'cli' | 'role'>, settings: Pick<SwarmSe
 /** The CLI whose model names fit the CEO: Claude Code's for Claude; an ACP harness names its own (no Claude list). */
 const ceoModelCli = (settings: Pick<SwarmSettings, 'ceoHarness'>): AgentCli => (settings.ceoHarness === 'claude' ? 'claude' : 'opencode');
 
+/**
+ * The identity the model input is keyed (remounted) by. For the CEO that identity is the harness itself: both ACP
+ * harnesses map to one synthetic cli, so keying by it would keep nano-coder's unblurred text mounted for Copilot's
+ * field, and the next blur would save the old harness's model into the new one.
+ */
+export const modelKey = (agent: Pick<Agent, 'role'>, cli: AgentCli, settings: Pick<SwarmSettings, 'ceoHarness'>): string => (agent.role === 'ceo' ? settings.ceoHarness : cli);
+
 /** An ACP CEO's model field offers no suggestions: the harness names its own models, so a Claude list would mislead. */
 const modelList = (agent: Agent, cli: AgentCli, acpCeo: boolean): string[] =>
   agent.role === 'ceo' && acpCeo ? [] : modelSuggestions(cli);
@@ -96,7 +103,7 @@ export function ModelInput({ agent, id, className = 'inline', style, settings: o
     <>
       <input
         id={id}
-        key={`m-${agent.model}-${cli}`}
+        key={`m-${agent.model}-${modelKey(agent, cli, settings)}`}
         className={className}
         style={style}
         list={listId}

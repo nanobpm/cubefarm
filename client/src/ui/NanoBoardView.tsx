@@ -4,22 +4,28 @@ import { useStore } from '../store';
 import { paintNanoBoard, useMinute } from '../world/NanoBoard';
 import { Panel } from './Panel';
 
-/** A worker holds it, it waits on you, it's queued, waits for an event, or (null) it's done/not reached. */
+/** Every state the canvas shows for a shape, joined: an incident step can still be held by a worker, so no early return. */
 function shapeState(s: NanoShape): string {
-  if (s.incident) return 'incident';
-  if (s.workers.length) return `worker: ${s.workers.join(', ')}`;
+  const parts: string[] = [];
+  if (s.incident) parts.push('incident');
+  if (s.workers.length) parts.push(`worker: ${s.workers.join(', ')}`);
   switch (s.waiting) {
     case 'escalation':
-      return 'waiting on you (escalation)';
+      parts.push('waiting on you (escalation)');
+      break;
     case 'human':
-      return 'waiting on a person';
+      parts.push('waiting on a person');
+      break;
     case 'queued':
-      return 'queued, no worker yet';
+      parts.push('queued, no worker yet');
+      break;
     case 'event':
-      return 'waiting for an event or timer';
-    default:
-      return s.active ? 'active' : s.done ? `done ×${s.done}` : 'not reached';
+      parts.push('waiting for an event or timer');
+      break;
   }
+  if (s.active) parts.push('active');
+  if (s.done) parts.push(`done ×${s.done}`);
+  return parts.length ? parts.join('; ') : 'not reached';
 }
 
 /**
