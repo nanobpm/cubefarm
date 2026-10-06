@@ -292,6 +292,15 @@ describe('the CEO on another harness', () => {
     expect(plain).toContain('Change things only through the office tools.');
     expect(plain).not.toContain('nano-workforce');
   });
+
+  it('lets the CEO write its notes file directly, next to the mutation restrictions', () => {
+    // The restrictions forbid mutating repository/company state, but no office tool writes the notes file — so the
+    // prompt must carve it out, or an ACP CEO can't keep the durable notes the same breath requires.
+    for (const nanoSkill of [undefined, '# skill\n']) {
+      const p = ceoSystemPrompt({ ...base, shellTools: { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' }, nanoSkill });
+      expect(p).toContain('NOTES.md is the one file you may write directly');
+    }
+  });
 });
 
 describe('planning guidance', () => {

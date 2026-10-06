@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acpArgs, parseRpc, permissionOutcome, readUpdate } from './acp.ts';
+import { acpArgs, additionalDirectories, parseRpc, permissionOutcome, readUpdate } from './acp.ts';
 import { firstPrompt, handleOfficeCall } from './acpRunner.ts';
 
 describe('acp', () => {
@@ -36,6 +36,17 @@ describe('acp', () => {
 
   it('gives the instructions with the first prompt, as ACP has no system prompt', () => {
     expect(firstPrompt({ systemAppend: 'You are the CEO.', prompt: 'Review.' })).toBe('You are the CEO.\n\n---\n\nReview.');
+  });
+
+  it('passes the reference clones to a session only when the agent takes additional directories', () => {
+    // An ACP agent may treat its roots as a filesystem boundary: without additionalDirectories on session/new and
+    // session/load, a CEO rooted at its own dir can't read the clones its instructions tell it to inspect.
+    const dirs = ['/clones/app', '/clones/site'];
+    expect(additionalDirectories({ sessionCapabilities: { additionalDirectories: true } }, dirs)).toEqual(dirs);
+    expect(additionalDirectories({ sessionCapabilities: { additionalDirectories: false } }, dirs)).toEqual([]);
+    expect(additionalDirectories({}, dirs)).toEqual([]);
+    expect(additionalDirectories(undefined, dirs)).toEqual([]);
+    expect(additionalDirectories({ sessionCapabilities: { additionalDirectories: true } }, [])).toEqual([]);
   });
 
   it('refuses tool calls for a session that has ended', async () => {

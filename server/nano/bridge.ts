@@ -171,13 +171,14 @@ export class NanoBridge {
       const live = new Set(seats.map((s) => s.instance));
       for (const gone of new Set([...this.seated, ...this.host.workers()])) {
         if (live.has(gone)) continue;
-        this.host.unseat(gone);
-        this.seated.delete(gone);
         // A departed worker is no longer in `seats`, so the follow block below never clears it: flush its stream
         // here (its last buffered text, then forget the stream) so readers/offsets/following don't leak forever.
+        // Flush before unseating: the real host's unseat removes the worker, so a log after it would be dropped.
         const stream = this.following.get(gone);
         if (stream) this.endStream(gone, stream);
         this.following.delete(gone);
+        this.host.unseat(gone);
+        this.seated.delete(gone);
       }
       this.escalations(escalations);
       for (const s of seats) {

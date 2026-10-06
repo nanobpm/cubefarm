@@ -4,7 +4,8 @@
 [nano-workforce](https://github.com/nanobpm/nano-workforce) app. nano-workforce plans, implements, reviews and
 merges; the office shows that work and drives it. Its own orchestrator stands down: no QA lab, no local agent
 sessions, no auto-assign. With `--nano` an optional ACP CEO (nano-coder or Copilot) still runs for the manager's chat
-(see below); with Claude Code or `--demo` there is no CEO session either.
+(see below); with Claude Code there is no CEO session. Under `--demo` the CEO stays the demo's scripted one — an ACP
+harness chat is faked by the demo, never a real ACP session.
 
 | In the office | From / to nano-workforce |
 | --- | --- |

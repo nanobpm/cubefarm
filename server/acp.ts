@@ -43,6 +43,21 @@ export function permissionOutcome(params: Record<string, unknown> | undefined) {
   return pick?.optionId ? { outcome: { outcome: 'selected', optionId: pick.optionId } } : { outcome: { outcome: 'cancelled' } };
 }
 
+/** The agentCapabilities an ACP agent answers `initialize` with (the fields the office reads). */
+export interface AcpCapabilities {
+  loadSession?: boolean;
+  sessionCapabilities?: { additionalDirectories?: boolean };
+}
+
+/**
+ * The reference clones for `session/new` / `session/load`: only when the agent advertised
+ * `sessionCapabilities.additionalDirectories` — an agent may treat its roots as a filesystem boundary, so without
+ * them a session rooted at the CEO's own dir can't read the clones it's told to inspect.
+ */
+export function additionalDirectories(caps: AcpCapabilities | undefined, dirs: string[]): string[] {
+  return dirs.length && caps?.sessionCapabilities?.additionalDirectories ? dirs : [];
+}
+
 const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 function toolInput(raw: unknown): string {

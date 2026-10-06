@@ -392,6 +392,26 @@ describe('bridge', () => {
     expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'tail' }]);
   });
 
+  it('flushes a departed worker’s tail before unseating it (the real host drops logs for a removed worker)', async () => {
+    // The office's unseat fires the worker, so a flush after it logs to nobody. Record the host's call order:
+    // the tail must already be logged when unseat runs.
+    let s = supply;
+    const order: string[] = [];
+    const buffered = JSON.stringify({ nwfTranscriptEvent: 1, kind: 'message', role: 'assistant', text: 'tail' });
+    const { host, bridge } = setup({
+      supply: async () => s,
+      transcript: async (stream, from) => (stream === 'job:j1' && from === 0 ? { status: 'open', nextOffset: 1, entries: [{ offset: 0, chunk: buffered }] } : null),
+    });
+    host.unseat.mockImplementation((instance: string) => void order.push(`unseat ${instance}`));
+    host.log.mockImplementation((instance: string) => void order.push(`log ${instance}`));
+    await bridge.tick();
+    s = { workers: supply.workers.slice(1) };
+    await bridge.tick();
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'tail' }]);
+    expect(order.indexOf('log w1')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('log w1')).toBeLessThan(order.indexOf('unseat w1'));
+  });
+
   it('unseats a persisted worker the supply never reports (ghost desk after a restart)', async () => {
     // The office kept 'wGhost' at a desk across a restart, but it is gone from nano-workforce. This bridge process
     // never saw it seated, so only reconciling against the host's persisted workers clears it.

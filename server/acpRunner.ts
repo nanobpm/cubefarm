@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { CeoHarness } from '../shared/types.ts';
-import { ACP_COMMANDS, acpArgs, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, type RpcMessage } from './acp.ts';
+import { ACP_COMMANDS, acpArgs, additionalDirectories, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, type AcpCapabilities, type RpcMessage } from './acp.ts';
 import type { SessionCallbacks, SessionHandle, SessionOptions, SessionResult } from './agentRunner.ts';
 import type { OfficeTools } from './ceo.ts';
 import { officeAddress } from './cliRunner.ts';
@@ -188,14 +188,18 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
 
   void (async () => {
     try {
-      const init = await request<{ agentCapabilities?: { loadSession?: boolean } }>('initialize', {
+      const init = await request<{ agentCapabilities?: AcpCapabilities }>('initialize', {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       });
+      // The reference clones the CEO is told to inspect: an ACP agent may treat its roots as a filesystem boundary,
+      // so a session rooted at the CEO's dir can't read them unless they go with session/new and session/load.
+      const dirs = additionalDirectories(init?.agentCapabilities, opts.additionalDirectories);
+      const addDirs = dirs.length ? { additionalDirectories: dirs } : {};
       if (opts.resumeSessionId && init?.agentCapabilities?.loadSession) {
         replaying = true;
         try {
-          await request('session/load', { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [] });
+          await request('session/load', { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [], ...addDirs });
           sessionId = opts.resumeSessionId;
         } catch {
           cb.log([{ kind: 'system', text: '↺ The last session could not be resumed; starting a new one.' }]);
@@ -204,7 +208,7 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
       }
       // Resumed turns still prepend systemAppend so the refreshed skill/instructions reach a loaded session.
       queue.unshift(firstPrompt(opts));
-      if (!sessionId) sessionId = (await request<{ sessionId: string }>('session/new', { cwd: opts.cwd, mcpServers: [] })).sessionId;
+      if (!sessionId) sessionId = (await request<{ sessionId: string }>('session/new', { cwd: opts.cwd, mcpServers: [], ...addDirs })).sessionId;
       cb.sessionId(sessionId);
       void runQueue();
     } catch (err) {

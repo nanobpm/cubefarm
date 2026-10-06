@@ -280,7 +280,7 @@ export function ceoSystemPrompt(o: {
           o.nanoSkill
             ? '- The repository clones are read-only reference: never edit their files. Otherwise change things only through the office tools and the nano-workforce commands in the skill below; run nothing else that changes anything.'
             : '- Read the repositories through their clone paths. They are read-only to you: run no other commands that change anything.',
-          `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time.`,
+          `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time. ${o.notesFile} is the one file you may write directly — the restrictions above are about repository and company state, not your notes.`,
           o.nanoSkill ? '- Change things only through the office tools and the nano-workforce skill below.' : '- Change things only through the office tools.',
         ]
       : [
