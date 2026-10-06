@@ -58,6 +58,28 @@ export function additionalDirectories(caps: AcpCapabilities | undefined, dirs: s
   return dirs.length && caps?.sessionCapabilities?.additionalDirectories ? dirs : [];
 }
 
+/**
+ * Bounds a request's promise: it fails with `message` after `ms` (the caller's catch kills the child). Long-running
+ * `session/prompt` turns pass no timeout — only startup (initialize/session/new/load) is bounded, so an agent that
+ * stays alive without answering can't hold a CEO session slot forever.
+ */
+export function withTimeout<T>(p: Promise<T>, ms: number | undefined, message: string): Promise<T> {
+  if (ms === undefined) return p;
+  return new Promise<T>((ok, fail) => {
+    const t = setTimeout(() => fail(new Error(message)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        ok(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        fail(e);
+      },
+    );
+  });
+}
+
 const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 function toolInput(raw: unknown): string {
@@ -114,20 +136,23 @@ export function readUpdate(update: Record<string, unknown> | undefined, titles: 
 }
 
 /**
- * `cubefarm-office.cjs <tool> '<json>'`: the CEO's office tools for harnesses without MCP. Posts to the office at
- * CUBEFARM_OFFICE_URL (`.../api/office/<token>`, set in the CEO's environment), prints the answer, and exits 1 when
- * the office refuses. `-` reads the JSON from stdin, for arguments too long or awkward to quote.
+ * `cubefarm-office.cjs <tool> <json> | -b <base64url-json> | -`: the CEO's office tools for harnesses without MCP.
+ * Posts to the office at CUBEFARM_OFFICE_URL (`.../api/office/<token>`, set in the CEO's environment), prints the
+ * answer, and exits 1 when the office refuses. The JSON is base64url (`-b`) — letters, digits, `-` and `_` only, so
+ * it survives cmd.exe, PowerShell and POSIX shells with no quoting — or `-` reads it from stdin.
  */
 export const OFFICE_COMMAND_SOURCE = String.raw`// cubefarm: the CEO's office tools as a shell command.
-const [tool, json = '{}'] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const tool = args[0];
 const base = process.env.CUBEFARM_OFFICE_URL;
 if (!tool || !base) {
-  console.error(base ? 'Usage: cubefarm-office <tool> \'<json arguments>\'' : 'CUBEFARM_OFFICE_URL is not set: run this from the CEO session.');
+  console.error(base ? 'Usage: cubefarm-office <tool> <-b base64url-json | - | \'<json>\'' : 'CUBEFARM_OFFICE_URL is not set: run this from the CEO session.');
   process.exit(2);
 }
 const read = () => new Promise((ok) => { let s = ''; process.stdin.on('data', (d) => (s += d)); process.stdin.on('end', () => ok(s)); });
 (async () => {
-  const body = json === '-' ? await read() : json;
+  const a = args[1];
+  const body = a === undefined || a === '{}' ? '{}' : a === '-b' ? Buffer.from(args[2] || '', 'base64url').toString('utf8') : a === '-' ? await read() : a;
   const res = await fetch(base + '/' + encodeURIComponent(tool), { method: 'POST', headers: { 'content-type': 'application/json' }, body });
   const out = await res.json().catch(() => ({ error: 'The office sent no answer (' + res.status + ').' }));
   if (out.error) {

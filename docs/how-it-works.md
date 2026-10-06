@@ -66,7 +66,7 @@ The server works the numbers out from what it already knows plus a rolling week 
 
 ## Models and usage
 
-- Developers and QA default to **Claude Code with Claude Opus 5.5 (`claude-opus-5-5`) at medium effort**. In the manager's console, Settings sets the default coding agent, its model and the effort; the Team tab overrides any of them per agent. The default model belongs to the default coding agent: an agent on another one uses that agent's own default unless you name a model for them. The CEO's harness is chosen in Settings → The CEO; its model and effort are on the CEO tab.
+- Developers and QA default to **Claude Code with Claude Opus 5.5 (`claude-opus-5-5`) at medium effort**. In the manager's console, Settings sets the default coding agent, its model and the effort; the Team tab overrides any of them per agent. The default model belongs to the default coding agent: an agent on another one uses that agent's own default unless you name a model for them. The CEO's harness is chosen in Settings → The CEO; its model is on the CEO tab, and its effort too when the harness is Claude Code — an ACP harness (nano-coder, Copilot) exposes only its model, no effort.
 - Agents run on your Claude **subscription**: the server removes `ANTHROPIC_API_KEY` and all other inherited `CLAUDE_*` / `ANTHROPIC_*` variables before starting each agent, so Claude Code uses your login. Codex and OpenCode agents use whatever those CLIs are signed in with, and don't count toward Claude's usage pacing.
 - Every agent draws on the same subscription usage limits. By default every agent with work runs at once; set a **Session limit** in the manager's console to cap it. When a limit is hit, the agent's terminal shows it.
 

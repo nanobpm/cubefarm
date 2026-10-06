@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { CeoHarness } from '../shared/types.ts';
-import { ACP_COMMANDS, acpArgs, additionalDirectories, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, type AcpCapabilities, type RpcMessage } from './acp.ts';
+import { ACP_COMMANDS, acpArgs, additionalDirectories, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, withTimeout, type AcpCapabilities, type RpcMessage } from './acp.ts';
 import type { SessionCallbacks, SessionHandle, SessionOptions, SessionResult } from './agentRunner.ts';
 import type { OfficeTools } from './ceo.ts';
 import { officeAddress } from './cliRunner.ts';
@@ -16,6 +16,9 @@ import { HOME_DIR } from './config.ts';
 import { killTree } from './deps.ts';
 
 const OFFICE_COMMAND = path.join(HOME_DIR, 'bin', 'cubefarm-office.cjs');
+
+/** Startup (initialize/session/new/load) must answer within this, or the child is killed and its stderr reported. */
+export const ACP_STARTUP_TIMEOUT_MS = 60_000;
 
 /** The shell command the CEO's instructions give it for the office tools. Forward slashes: it may run in Git Bash. */
 export function officeCommand(): string {
@@ -187,11 +190,16 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
   };
 
   void (async () => {
+    // Startup is bounded (unlike session/prompt turns): an agent that stays alive without answering would otherwise
+    // hold a CEO session slot forever, with no terminal to recover it. The catch kills the child and reports stderr.
+    const startup = <T>(p: Promise<T>) => withTimeout(p, ACP_STARTUP_TIMEOUT_MS, `${harness} did not answer during startup (waited ${ACP_STARTUP_TIMEOUT_MS / 1000}s)`);
     try {
-      const init = await request<{ agentCapabilities?: AcpCapabilities }>('initialize', {
-        protocolVersion: 1,
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-      });
+      const init = await startup(
+        request<{ agentCapabilities?: AcpCapabilities }>('initialize', {
+          protocolVersion: 1,
+          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+        }),
+      );
       // The reference clones the CEO is told to inspect: an ACP agent may treat its roots as a filesystem boundary,
       // so a session rooted at the CEO's dir can't read them unless they go with session/new and session/load.
       const dirs = additionalDirectories(init?.agentCapabilities, opts.additionalDirectories);
@@ -199,7 +207,7 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
       if (opts.resumeSessionId && init?.agentCapabilities?.loadSession) {
         replaying = true;
         try {
-          await request('session/load', { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [], ...addDirs });
+          await startup(request('session/load', { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [], ...addDirs }));
           sessionId = opts.resumeSessionId;
         } catch {
           cb.log([{ kind: 'system', text: '↺ The last session could not be resumed; starting a new one.' }]);
@@ -208,7 +216,7 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
       }
       // Resumed turns still prepend systemAppend so the refreshed skill/instructions reach a loaded session.
       queue.unshift(firstPrompt(opts));
-      if (!sessionId) sessionId = (await request<{ sessionId: string }>('session/new', { cwd: opts.cwd, mcpServers: [], ...addDirs })).sessionId;
+      if (!sessionId) sessionId = (await startup(request<{ sessionId: string }>('session/new', { cwd: opts.cwd, mcpServers: [], ...addDirs }))).sessionId;
       cb.sessionId(sessionId);
       void runQueue();
     } catch (err) {

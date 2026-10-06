@@ -276,7 +276,7 @@ export function ceoSystemPrompt(o: {
     'How you work:',
     ...(o.shellTools
       ? [
-          `- The office tools are a shell command: ${o.shellTools.command} <tool> '<json arguments>' (a JSON object; use {} for none). It prints the result, and exits non-zero when the office refuses, with the reason. Call company_status first: it lists every floor, its clone path, team, backlog, pull requests and your pending proposals.`,
+          `- The office tools are a shell command: ${o.shellTools.command} <tool> -b <base64url of the JSON arguments> (a JSON object; use -b e30 for none: e30 is base64url of {}). It prints the result, and exits non-zero when the office refuses, with the reason. Pass the arguments base64url-encoded (letters, digits, - and _ only: printf '%s' '<json>' | base64 | tr '+/' '-_' | tr -d '=\\n'), never quoted JSON — every shell this may run in (cmd.exe, PowerShell, bash) passes base64url through unchanged, while quoting differs between them. Call company_status first: it lists every floor, its clone path, team, backlog, pull requests and your pending proposals.`,
           o.nanoSkill
             ? '- The repository clones are read-only reference: never edit their files. Otherwise change things only through the office tools and the nano-workforce commands in the skill below; run nothing else that changes anything.'
             : '- Read the repositories through their clone paths. They are read-only to you: run no other commands that change anything.',

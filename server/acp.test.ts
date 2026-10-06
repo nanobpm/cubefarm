@@ -1,6 +1,13 @@
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { acpArgs, additionalDirectories, parseRpc, permissionOutcome, readUpdate } from './acp.ts';
+import { acpArgs, additionalDirectories, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, withTimeout } from './acp.ts';
 import { firstPrompt, handleOfficeCall } from './acpRunner.ts';
+
+const execFileP = promisify(execFile);
 
 describe('acp', () => {
   it('starts the harness in ACP mode, with a model only when one is set', () => {
@@ -51,5 +58,30 @@ describe('acp', () => {
 
   it('refuses tool calls for a session that has ended', async () => {
     expect(await handleOfficeCall('nope', 'company_status', {})).toEqual({ error: 'This CEO session has ended.' });
+  });
+
+  it('bounds a request only when a timeout is given', async () => {
+    // The startup timeout (acpRunner) relies on this: a bounded request fails after ms; an unbounded one (a
+    // session/prompt turn) is returned untouched so a long turn is never cut off.
+    await expect(withTimeout(new Promise(() => undefined), 20, 'too slow')).rejects.toThrow('too slow');
+    const slow = new Promise<string>((ok) => setTimeout(() => ok('done'), 30));
+    await expect(withTimeout(slow, 1000, 'too slow')).resolves.toBe('done');
+    const passthrough = Promise.resolve('x');
+    expect(withTimeout(passthrough, undefined, 'unused')).toBe(passthrough);
+  });
+
+  it('decodes base64url tool arguments, so no shell quoting is needed', async () => {
+    // cmd.exe/PowerShell pass single quotes literally, so quoted JSON never reaches the helper; base64url
+    // (letters/digits/-/_ only) survives every shell. The office command must decode it back to the exact JSON.
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cubefarm-office-')), 'office.cjs');
+    fs.writeFileSync(file, OFFICE_COMMAND_SOURCE);
+    try {
+      const b64 = Buffer.from('{"a":"b c","q":"\\"x\\" + / ="}', 'utf8').toString('base64url');
+      // CUBEFARM_OFFICE_URL points at a closed port: the command decodes the body, then fails to connect — proving
+      // the argument parsed as a flag + value, not as literal quoted JSON (which would exit 2 on usage).
+      await expect(execFileP(process.execPath, [file, 'company_status', '-b', b64], { env: { ...process.env, CUBEFARM_OFFICE_URL: 'http://127.0.0.1:1' } })).rejects.toThrow(/could not be reached/);
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true, maxRetries: 3 });
+    }
   });
 });

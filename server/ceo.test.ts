@@ -267,7 +267,7 @@ describe('the CEO on another harness', () => {
 
   it('gets the office tools as a shell command, not MCP', () => {
     const p = ceoSystemPrompt({ ...base, shellTools: { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' } });
-    expect(p).toContain(`node "/x/cubefarm-office.cjs" <tool> '<json arguments>'`);
+    expect(p).toContain(`node "/x/cubefarm-office.cjs" <tool> -b <base64url of the JSON arguments>`);
     expect(p).toContain('- company_status: everything');
     expect(p).not.toContain('mcp__office__');
     expect(ceoSystemPrompt(base)).toContain('mcp__office__company_status');
@@ -299,6 +299,17 @@ describe('the CEO on another harness', () => {
     for (const nanoSkill of [undefined, '# skill\n']) {
       const p = ceoSystemPrompt({ ...base, shellTools: { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' }, nanoSkill });
       expect(p).toContain('NOTES.md is the one file you may write directly');
+    }
+  });
+
+  it('passes tool arguments shell-independently (base64url), never quoted JSON', () => {
+    // An ACP CEO may run under cmd.exe/PowerShell, where single quotes are literal: quoted JSON never parses. The
+    // prompt must send the arguments base64url (letters/digits/-/_), which every shell passes through unchanged.
+    for (const nanoSkill of [undefined, '# skill\n']) {
+      const p = ceoSystemPrompt({ ...base, shellTools: { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' }, nanoSkill });
+      expect(p).toContain('-b <base64url of the JSON arguments>');
+      expect(p).toContain('never quoted JSON');
+      expect(p).not.toContain(`<tool> '<json arguments>'`);
     }
   });
 });
