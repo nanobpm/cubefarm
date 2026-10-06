@@ -437,6 +437,43 @@ describe('bridge', () => {
     expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'second' }]); // the post-poll entry, not lost
   });
 
+  it('flushes departed workers concurrently, so one slow transcript can’t stall the rest', async () => {
+    // The class: a serial await per departed worker makes one poll take up to workerCount × the transcript
+    // timeout, freezing every floor/seat/escalation update during a mass departure. The flushes must overlap.
+    let s = supply;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let departing = false;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const tail = JSON.stringify({ nwfTranscriptEvent: 1, kind: 'message', role: 'assistant', text: 'bye' });
+    const { host, bridge } = setup({
+      supply: async () => s,
+      transcript: async (stream) => {
+        if (departing && (stream === 'job:j1' || stream === 'job:j3')) {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await gate;
+          inFlight--;
+          return { status: 'open', nextOffset: 1, entries: [{ offset: 0, chunk: tail }] };
+        }
+        return null;
+      },
+    });
+    await bridge.tick(); // seats w1 (job:j1) and w3 (job:j3), both now followed
+    departing = true;
+    s = { workers: [] }; // everyone leaves at once
+    const t = bridge.tick();
+    await new Promise((r) => setTimeout(r, 0)); // let both departed flushes start before releasing
+    release();
+    await t;
+    expect(maxInFlight).toBe(2); // both transcript fetches in flight together — serial would cap at 1
+    expect(host.unseat).toHaveBeenCalledWith('w1');
+    expect(host.unseat).toHaveBeenCalledWith('w3');
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'bye' }]);
+    expect(host.log).toHaveBeenCalledWith('w3', [{ kind: 'text', text: 'bye' }]);
+  });
+
   it('unseats a persisted worker the supply never reports (ghost desk after a restart)', async () => {
     // The office kept 'wGhost' at a desk across a restart, but it is gone from nano-workforce. This bridge process
     // never saw it seated, so only reconciling against the host's persisted workers clears it.
