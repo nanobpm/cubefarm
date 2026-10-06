@@ -954,6 +954,7 @@ export class Swarm {
       syncError: rt.syncError,
       previewConfig: r.preview,
       preview: this.previews.view(r),
+      ...(this.nano ? { nanoBoard: this.nano.board(r.id) } : {}),
     };
   }
 

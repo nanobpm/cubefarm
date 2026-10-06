@@ -107,13 +107,17 @@ export interface EngineElement {
   elementId: string;
   elementName?: string | null;
   type: string;
+  state?: string; // ACTIVE | COMPLETED | TERMINATED
+  hasIncident?: boolean;
+  startDate?: string | null;
 }
 
 /** The Camunda engine's REST API (v2): what nano-workforce's processes are doing, step by step. Read only. */
 export interface EngineApi {
   activeInstances(): Promise<EngineInstance[]>;
   activeJobs(): Promise<EngineJob[]>;
-  activeElements(processInstanceKey: string): Promise<EngineElement[]>;
+  /** Every element instance of a process instance, finished ones too: where it is and where it's been. */
+  elements(processInstanceKey: string): Promise<EngineElement[]>;
   processXml(processDefinitionKey: string): Promise<string>;
 }
 
@@ -231,7 +235,7 @@ export function engineClient(base: string, opts: { auth?: string; fetch?: typeof
   return {
     activeInstances: () => search<EngineInstance>('process-instances', { state: 'ACTIVE' }),
     activeJobs: async () => (await search<EngineJob>('jobs', { state: 'CREATED' })).filter((j) => j.worker),
-    activeElements: (key) => search<EngineElement>('element-instances', { state: 'ACTIVE', processInstanceKey: key }),
+    elements: (key) => search<EngineElement>('element-instances', { processInstanceKey: key }),
     processXml: (key) => call('GET', `/process-definitions/${key}/xml`),
   };
 }

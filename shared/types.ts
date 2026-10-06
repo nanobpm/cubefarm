@@ -84,7 +84,56 @@ export interface RepoView {
   syncError?: string;
   previewConfig: PreviewConfig;
   preview: PreviewView;
+  /** Nano mode (server/nano/): what the floor's whiteboard shows instead of the kanban. */
+  nanoBoard?: NanoBoard;
 }
+
+/** A BPMN element on a process floor's board, with where the process is at. */
+export interface NanoShape {
+  id: string;
+  name: string;
+  kind: string; // serviceTask, userTask, exclusiveGateway, startEvent…
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  active: number; // tokens there now
+  done: number; // times it completed
+  incident: boolean;
+  agent: boolean; // an agent step (pool:capability job)
+  workers: string[]; // who holds its job now
+  waiting: 'escalation' | 'queued' | 'human' | 'event' | null;
+  since: number | null; // when its oldest active token arrived (epoch ms)
+}
+
+export interface NanoEdge {
+  points: number[]; // x0, y0, x1, y1…
+  taken: boolean;
+}
+
+export type NanoBoard =
+  | {
+      kind: 'process';
+      process: string; // BPMN process id
+      instanceKey: string;
+      title: string;
+      subtitle: string;
+      incident: boolean;
+      startedAt: number;
+      bounds: { x: number; y: number; w: number; h: number };
+      shapes: NanoShape[];
+      edges: NanoEdge[];
+      escalations: { ref: string; label: string }[];
+    }
+  | {
+      kind: 'fleet';
+      /** Agent job types: who holds one, and what's queued for them. */
+      types: { type: string; held: { worker: string; floor: string | null; since: number | null }[]; queued: { floor: string | null; step: string; since: number | null }[] }[];
+      idle: { name: string; family: string }[];
+      offline: string[];
+      escalations: { ref: string; label: string; floor: string | null }[];
+      processes: { floor: string | null; label: string; incident: boolean; active: string[] }[];
+    };
 
 /**
  * How a floor's app is run for the preview monitor. {port} and {tmp} are replaced in the command and env values;

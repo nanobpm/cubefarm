@@ -5,7 +5,8 @@
  * hears through NanoHost.
  */
 import type { EngineApi, EngineElement, NanoApi, NanoEscalation, NanoPr } from './client.ts';
-import { buildWorld, parseProcess, type Floor, type ProcessModel, type Seat } from './floors.ts';
+import type { NanoBoard } from '../../shared/types.ts';
+import { BENCH, buildWorld, parseProcess, type Floor, type ProcessModel, type Seat } from './floors.ts';
 import { escalationMessage, escalationRef, parseAnswer, TranscriptReader, type ScreenLine } from './mirror.ts';
 
 export interface NanoHost {
@@ -48,6 +49,7 @@ export class NanoBridge {
   private models = new Map<string, ProcessModel>();
   private names = new Map<string, string>(); // root instance key → floor id
   private floorList: Floor[] = [];
+  private fleetBoard: NanoBoard | null = null;
 
   constructor(
     private api: NanoApi,
@@ -59,6 +61,12 @@ export class NanoBridge {
   /** The floors as last seen. */
   get floors(): readonly Floor[] {
     return this.floorList;
+  }
+
+  /** A floor's whiteboard: the bench's is the fleet, a process floor's its diagram. */
+  board(floorId: string): NanoBoard | undefined {
+    if (floorId === BENCH) return this.fleetBoard ?? undefined;
+    return this.floorList.find((f) => f.id.toLowerCase() === floorId.toLowerCase())?.board;
   }
 
   start() {
@@ -110,12 +118,13 @@ export class NanoBridge {
       await Promise.all(
         instances.map(async (i) => {
           const root = roots.find((r) => r.processInstanceKey === i.processInstanceKey)?.processInstanceKey ?? i.processInstanceKey;
-          const els = await this.engine.activeElements(i.processInstanceKey).catch(() => []);
+          const els = await this.engine.elements(i.processInstanceKey).catch(() => []);
           elements.set(root, [...(elements.get(root) ?? []), ...els]);
         }),
       );
       const world = buildWorld({ supply, prs, escalations, instances, jobs, elements, models: this.models, names: this.names });
       this.floorList = world.floors;
+      this.fleetBoard = world.fleet;
       this.cfg.book?.set(world.floors);
       await this.host.floors(world.floors);
       const seats = world.seats;

@@ -3,6 +3,7 @@ import { api } from '../api';
 import { agentsOnRepo, kanbanFor, useStore, type Agent, type KanbanCard } from '../store';
 import { confirmDialog } from './Confirm';
 import { Panel } from './Panel';
+import { NanoBoardView } from './NanoBoardView';
 
 function AgentChip({ agent }: { agent?: Agent }) {
   if (!agent) return null;
@@ -91,6 +92,7 @@ export function KanbanView({ repoId, embedded }: { repoId: string; embedded?: bo
   const [showForm, setShowForm] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
 
+  if (repo?.nanoBoard && !embedded) return <NanoBoardView repo={repo} />;
   if (!repo || !cols) {
     return (
       <Frame title="Kanban" embedded={embedded}>

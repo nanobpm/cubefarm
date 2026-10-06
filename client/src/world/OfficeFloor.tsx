@@ -14,6 +14,7 @@ import { ErrandDirector } from './ErrandDirector';
 import { Gong } from './Gong';
 import { useCanvasTexture } from './interact';
 import { KanbanBoard } from './KanbanBoard';
+import { NanoBoard } from './NanoBoard';
 import { Jukebox } from './Jukebox';
 import { Leaver, useLeavers } from './Leavers';
 import { DESK_RUGS, HALF_D, HALF_W, JUKEBOX, MAX_DESKS, QA_LAB, QA_ROTATION, QA_RUG, deskPosition, qaDeskPosition } from './layout';
@@ -97,7 +98,7 @@ export const OfficeFloor = memo(function OfficeFloor({ repo }: { repo: RepoView 
         deps={[inQa]}
       />
 
-      <KanbanBoard repo={repo} agents={agents} />
+      {repo.nanoBoard ? <NanoBoard repo={repo} /> : <KanbanBoard repo={repo} agents={agents} />}
       <ActivityTicker repoId={repo.id} />
       {agents.map((a) => <ActivityIcon key={a.id} agent={a} />)}
       <AppMonitor repo={repo} agents={agents} />

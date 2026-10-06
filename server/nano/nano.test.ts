@@ -54,7 +54,17 @@ const XML = `<?xml version="1.0"?><bpmn:definitions><bpmn:process id="convergenc
   <bpmn:serviceTask id="adversarial-review" name="Adversarial review (agent)"><bpmn:extensionElements><zeebe:taskDefinition type="senior:adversarial-review" /></bpmn:extensionElements></bpmn:serviceTask>
   <bpmn:userTask id="merge-approval" name="Approve merge (human)" />
   <bpmn:intermediateCatchEvent id="wait-review" name="Wait: review ready" />
-</bpmn:process></bpmn:definitions>`;
+  <bpmn:sequenceFlow id="f1" sourceRef="review-round" targetRef="persist-round" />
+  <bpmn:sequenceFlow id="f2" sourceRef="persist-round" targetRef="adversarial-review" />
+</bpmn:process>
+<bpmndi:BPMNDiagram><bpmndi:BPMNPlane>
+  <bpmndi:BPMNShape id="s1" bpmnElement="review-round"><dc:Bounds x="100" y="80" width="100" height="80" /></bpmndi:BPMNShape>
+  <bpmndi:BPMNShape id="s2" bpmnElement="persist-round"><dc:Bounds x="250" y="80" width="100" height="80" /></bpmndi:BPMNShape>
+  <bpmndi:BPMNShape id="s3" bpmnElement="adversarial-review"><dc:Bounds x="400" y="80" width="100" height="80" /></bpmndi:BPMNShape>
+  <bpmndi:BPMNShape id="s4" bpmnElement="wait-review"><dc:Bounds x="550" y="102" width="36" height="36" /></bpmndi:BPMNShape>
+  <bpmndi:BPMNEdge id="e1" bpmnElement="f1"><di:waypoint x="200" y="120" /><di:waypoint x="250" y="120" /></bpmndi:BPMNEdge>
+  <bpmndi:BPMNEdge id="e2" bpmnElement="f2"><di:waypoint x="350" y="120" /><di:waypoint x="400" y="120" /></bpmndi:BPMNEdge>
+</bpmndi:BPMNPlane></bpmndi:BPMNDiagram></bpmn:definitions>`;
 
 const inst = (key: string, over: Partial<EngineInstance> = {}): EngineInstance => ({
   processInstanceKey: key,
@@ -83,7 +93,19 @@ const world = (over: Partial<Parameters<typeof buildWorld>[0]> = {}) =>
     escalations: [esc({ processKey: '200', subjectTitle: 'Ship the graph' })],
     instances,
     jobs,
-    elements: new Map([['100', [{ elementInstanceKey: '101', processInstanceKey: '100', elementId: 'adversarial-review', type: 'SERVICE_TASK' }, { elementInstanceKey: '102', processInstanceKey: '100', elementId: 'wait-review', type: 'INTERMEDIATE_CATCH_EVENT' }]]]),
+    elements: new Map([
+      [
+        '100',
+        [
+          { elementInstanceKey: '101', processInstanceKey: '100', elementId: 'adversarial-review', type: 'SERVICE_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' },
+          { elementInstanceKey: '102', processInstanceKey: '100', elementId: 'wait-review', type: 'INTERMEDIATE_CATCH_EVENT', state: 'ACTIVE' },
+          { elementInstanceKey: '103', processInstanceKey: '100', elementId: 'review-round', type: 'SERVICE_TASK', state: 'COMPLETED' },
+          { elementInstanceKey: '104', processInstanceKey: '100', elementId: 'review-round', type: 'SERVICE_TASK', state: 'COMPLETED' },
+          { elementInstanceKey: '105', processInstanceKey: '100', elementId: 'review-round', type: 'SERVICE_TASK', state: 'ACTIVE' },
+          { elementInstanceKey: '106', processInstanceKey: '100', elementId: 'persist-round', type: 'SERVICE_TASK', state: 'COMPLETED', hasIncident: true },
+        ],
+      ],
+    ]),
     models: new Map<string, ProcessModel>([['d1', parseProcess(XML)], ['d2', parseProcess(XML)]]),
     names: new Map(),
     ...over,
@@ -125,6 +147,33 @@ describe('mirror', () => {
     expect(w.seats[1]).toMatchObject({ instance: 'w2', floorId: BENCH, desk: null, status: 'idle' });
     // a call activity's job is on its root's floor
     expect(w.seats[2]).toMatchObject({ instance: 'w3', floorId: 'delivery-graph/54bde3dae2fa', desk: 1, doing: 'Adversarial review', issueTitle: 'Ship the graph' });
+  });
+
+  it('draws the process board: tokens, loop counts, workers, what waits, flows taken', () => {
+    const b = world().floors[0].board;
+    if (b.kind !== 'process') throw new Error('not a process board');
+    const by = Object.fromEntries(b.shapes.map((s) => [s.id, s]));
+    expect(by['review-round']).toMatchObject({ active: 1, done: 2, workers: ['copilot-1'], waiting: null, agent: true, x: 100, w: 100 });
+    expect(by['adversarial-review']).toMatchObject({ active: 1, waiting: 'queued', since: Date.parse('2026-10-06T00:00:00Z') });
+    expect(by['persist-round']).toMatchObject({ incident: true, done: 1, agent: false });
+    expect(by['wait-review']).toMatchObject({ waiting: 'event' });
+    expect(b.edges.map((e) => e.taken)).toEqual([true, true]);
+    expect(b.bounds).toEqual({ x: 100, y: 80, w: 486, h: 80 });
+    expect(b.title).toBe('Add login');
+  });
+
+  it('draws the fleet board: held and queued per job type, the bench, escalations', () => {
+    const f = world().fleet;
+    if (f.kind !== 'fleet') throw new Error('not the fleet');
+    expect(f.types.find((t) => t.type === 'senior:adversarial-review')).toMatchObject({ queued: [{ floor: 'convergence-loop/app-pr45', step: 'Adversarial review' }] });
+    expect(f.types.find((t) => t.type === 'senior:pr-review')?.held).toEqual([
+      { worker: 'copilot-1', floor: 'convergence-loop/app-pr45', since: null },
+      { worker: 'kimi', floor: 'delivery-graph/54bde3dae2fa', since: null },
+    ]);
+    expect(f.idle).toEqual([{ name: 'claude-1', family: '' }]);
+    expect(f.offline).toEqual(['qwen']);
+    expect(f.escalations).toEqual([{ ref: '2251799813690001', label: 'Plan review: Ship the graph', floor: 'delivery-graph/54bde3dae2fa' }]);
+    expect(f.processes.map((p) => p.floor)).toEqual(['convergence-loop/app-pr45', 'delivery-graph/54bde3dae2fa']);
   });
 
   it('keeps a floor its name when its PR drops out of view', () => {
@@ -232,7 +281,7 @@ describe('bridge', () => {
     const engine: EngineApi = {
       activeInstances: async () => instances,
       activeJobs: async () => jobs,
-      activeElements: async () => [],
+      elements: async () => [],
       processXml: vi.fn(async () => XML),
     };
     const host = { floors: vi.fn(async () => undefined), seat: vi.fn(), unseat: vi.fn(), log: vi.fn(), phone: vi.fn(), needsHuman: vi.fn() } satisfies NanoHost;

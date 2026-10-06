@@ -61,3 +61,17 @@ Try it without anything real: `node scripts/fake-nano.mjs 4398`, then
   Stickies can't be handed out: in this mode they're what nano-workforce is waiting on.
 - The engine is the app's host on :8080 unless `--nano-engine <url>` / `CUBEFARM_NANO_ENGINE_URL` says otherwise
   (`CUBEFARM_NANO_ENGINE_AUTH`: an Authorization header value). GitHub isn't used at all in this mode.
+
+## Whiteboards
+
+In nano mode the kanban is replaced:
+
+- **Process floors** show the instance's BPMN diagram (from the model's own diagram coordinates), live:
+  green = a worker holds the step (👷 name), amber = an agent step queued with no worker yet, red = an escalation
+  waiting on you, orange = a human step, blue = waiting for an event/timer, grey = done before, faint = not reached.
+  `×n` is how many times a step completed (convergence rounds), ⚠ marks an incident, and flows already taken are solid.
+- **The bench (floor 1)** shows the fleet: every agent job type with who holds one (and on which floor, for how long)
+  and how many are queued, the processes running and where each is, idle and offline workers, and open escalations.
+
+Click a board for a larger view. Data: engine `/v2/element-instances` (all states) per root instance, built in
+`server/nano/floors.ts` (`processBoard`, `fleetBoard`) and drawn by `client/src/world/nanoDraw.ts`.
