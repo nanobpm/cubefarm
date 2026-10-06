@@ -15,7 +15,7 @@ That's it. cubefarm checks your machine, starts the office and opens it in your 
 - **Node.js 22 or newer**: [nodejs.org](https://nodejs.org)
 - **git**
 - **The GitHub CLI**, signed in: install it from [cli.github.com](https://cli.github.com), then run `gh auth login`
-- **A coding agent subscription**: cubefarm brings Claude Code, the default agent and the one your CEO runs: sign in once with `npx cubefarm login`. You don't need to install it. Agents can also run Codex or OpenCode, if you have them installed and signed in.
+- **A coding agent subscription**: cubefarm brings Claude Code, the default agent and the CEO's default harness: sign in once with `npx cubefarm login`. You don't need to install it. Agents can also run Codex or OpenCode, if you have them installed and signed in.
 - **Google Chrome**, for agents that test your app in a browser.
 
 It runs on Windows, macOS and Linux. Not sure you're ready? `npx cubefarm doctor` checks all of it.
