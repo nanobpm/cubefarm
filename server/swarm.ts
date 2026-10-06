@@ -971,7 +971,7 @@ export class Swarm {
     const rt = this.agentRt.get(a.id)!;
     // While a CEO session is live, terminal visibility follows the harness that owns the session, not the
     // mutable "Runs on" setting: switching it mid-session must not hide a running terminal or reveal a stale one.
-    const ceoHarness = a.role === 'ceo' && rt.session ? (this.state.ceo.sessionHarness ?? 'claude') : this.state.settings.ceoHarness;
+    const ceoHarness = a.role === 'ceo' ? this.ceoActiveHarness() : this.state.settings.ceoHarness;
     return {
       id: a.id,
       name: a.name,
@@ -2277,7 +2277,7 @@ export class Swarm {
   /** What an agent is told on a task, previewed with placeholders for the task's details. */
   agentPrompt(id: string): AgentPromptView {
     const a = this.agent(id);
-    if (a.role === 'ceo') return ceoPromptPreview(ceoSystemPrompt(this.ceoPromptInput(a)));
+    if (a.role === 'ceo') return ceoPromptPreview(ceoSystemPrompt(this.ceoPromptInput(a, this.ceoActiveHarness())));
     const repo = this.repo(a.repoId);
     const base = { agent: a, repo, port: this.port(a), slug: slugify(a.name) };
     return a.role === 'qa' ? qaPromptPreview(base) : devPromptPreview({ ...base, linked: this.linkedDirs(repo) });
@@ -3666,6 +3666,16 @@ export class Swarm {
     return this.state.agents.find((a) => a.id === CEO_ID)!;
   }
 
+  /**
+   * The harness that owns the CEO right now: while a session is live it belongs to `sessionHarness`,
+   * so routing (terminal visibility, nano-vs-CEO phone replies) must follow that, not the mutable
+   * "Runs on" setting; only once no session runs does the setting take over.
+   */
+  private ceoActiveHarness(): CeoHarness {
+    const rt = this.agentRt.get(CEO_ID);
+    return rt?.session ? (this.state.ceo.sessionHarness ?? 'claude') : this.state.settings.ceoHarness;
+  }
+
   /** The company always has a CEO. One cut off by a server restart picks its job back up. */
   private ensureCeo(interrupted: PersistedAgent[]) {
     let a = this.state.agents.find((x) => x.id === CEO_ID);
@@ -3790,7 +3800,7 @@ export class Swarm {
     void this.runCeoJob(a, job);
   }
 
-  private ceoPromptInput(a: PersistedAgent, nanoSkill?: string): Parameters<typeof ceoSystemPrompt>[0] {
+  private ceoPromptInput(a: PersistedAgent, harness: CeoHarness, nanoSkill?: string): Parameters<typeof ceoSystemPrompt>[0] {
     const s = this.state.settings;
     return {
       name: a.name,
@@ -3800,7 +3810,7 @@ export class Swarm {
       sessionLimit: s.sessionLimit,
       teamCap: s.teamCap,
       hiring: s.hiring,
-      ...(s.ceoHarness !== 'claude' ? { shellTools: { command: officeCommand(), catalog: this.officeTools().catalog() } } : {}),
+      ...(harness !== 'claude' ? { shellTools: { command: officeCommand(), catalog: this.officeTools().catalog() } } : {}),
       ...(nanoSkill ? { nanoSkill } : {}),
     };
   }
@@ -3836,8 +3846,10 @@ export class Swarm {
     this.emitCeo();
     this.save();
     await fs.mkdir(CEO_DIR, { recursive: true }).catch(() => undefined);
-    // Capture the harness when the job is accepted, so a setting change during the awaits below can't misroute this session.
+    // Capture the harness and model when the job is accepted, so a setting change during the awaits below
+    // (which resets a.model and the prompt mode via updateSettings) can't misroute or misconfigure this session.
     const harness = this.state.settings.ceoHarness;
+    const model = harness === 'claude' ? a.model || CEO_MODEL : a.model;
     const triage = job.kind === 'triage' ? await this.triagePr(job) : null;
     const nanoSkill = await this.ceoNanoSkill(a);
     if (a.status !== 'working') {
@@ -3855,8 +3867,8 @@ export class Swarm {
       {
         cwd: CEO_DIR,
         prompt: ceoJobPrompt(job, floor, triage),
-        systemAppend: ceoSystemPrompt(this.ceoPromptInput(a, nanoSkill)),
-        model: harness === 'claude' ? a.model || CEO_MODEL : a.model,
+        systemAppend: ceoSystemPrompt(this.ceoPromptInput(a, harness, nanoSkill)),
+        model,
         effort: a.effort || CEO_EFFORT,
         browserTesting: false,
         additionalDirectories: this.state.repos.filter((r) => this.repoRt.get(r.id)?.cloneStatus === 'ready').map((r) => this.backend.mainDir(r.fullName)),
@@ -4620,7 +4632,7 @@ export class Swarm {
   /** The manager's phone in nano mode: answers to escalations, "status", or how to use it. */
   /** Nano mode has a CEO only on an ACP harness: its sessions are the only real ones here (nano/backend.ts). */
   private nanoCeo() {
-    return this.state.settings.ceoHarness !== 'claude';
+    return this.ceoActiveHarness() !== 'claude';
   }
 
   /** A nano command (`status`, `answer …`, `start …`) answered on the phone; false: it's for the CEO. */
