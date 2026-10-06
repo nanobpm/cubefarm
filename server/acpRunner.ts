@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { CeoHarness } from '../shared/types.ts';
-import { ACP_COMMANDS, acpArgs, additionalDirectories, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, withTimeout, type AcpCapabilities, type RpcMessage } from './acp.ts';
+import { ACP_COMMANDS, acpArgs, additionalDirectories, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, TimeoutError, withTimeout, type AcpCapabilities, type RpcMessage } from './acp.ts';
 import type { SessionCallbacks, SessionHandle, SessionOptions, SessionResult } from './agentRunner.ts';
 import type { OfficeTools } from './ceo.ts';
 import { officeAddress } from './cliRunner.ts';
@@ -216,10 +216,16 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
         try {
           await startup(request('session/load', { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [], ...addDirs }));
           sessionId = opts.resumeSessionId;
-        } catch {
+        } catch (err) {
+          // A genuine load error (the harness answered "no such session") is recoverable: fall through to session/new
+          // on the same process. A *timeout* is not — withTimeout can't cancel the request, so a late load reply would
+          // replay the old conversation into the fresh turn, and a truly hung harness would then burn a second full
+          // startup timeout on session/new. Propagate it to the outer catch, which kills the child.
+          if (err instanceof TimeoutError) throw err;
           cb.log([{ kind: 'system', text: '↺ The last session could not be resumed; starting a new one.' }]);
+        } finally {
+          replaying = false;
         }
-        replaying = false;
       }
       // Resumed turns still prepend systemAppend so the refreshed skill/instructions reach a loaded session.
       queue.unshift(firstPrompt(opts));

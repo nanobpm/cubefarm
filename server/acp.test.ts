@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { acpArgs, additionalDirectories, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, withTimeout } from './acp.ts';
+import { acpArgs, additionalDirectories, OFFICE_COMMAND_SOURCE, parseRpc, permissionOutcome, readUpdate, TimeoutError, withTimeout } from './acp.ts';
 import { firstPrompt, handleOfficeCall, startAcpSession } from './acpRunner.ts';
 import type { SessionCallbacks, SessionResult } from './agentRunner.ts';
 import { HOME_DIR } from './config.ts';
@@ -70,6 +70,16 @@ describe('acp', () => {
     await expect(withTimeout(slow, 1000, 'too slow')).resolves.toBe('done');
     const passthrough = Promise.resolve('x');
     expect(withTimeout(passthrough, undefined, 'unused')).toBe(passthrough);
+  });
+
+  it('fails a timeout with a TimeoutError, but passes a real rejection through unchanged', async () => {
+    // acpRunner's session/load catch tells these apart: a genuine "no such session" reply is recoverable (fall through
+    // to session/new on the same process), but a TimeoutError must be rethrown to kill the hung child. If withTimeout
+    // used a plain Error for both, a load timeout would be swallowed as if the session were merely missing.
+    await expect(withTimeout(new Promise(() => undefined), 10, 'too slow')).rejects.toBeInstanceOf(TimeoutError);
+    const loadError = Promise.reject(new Error('session not found'));
+    await expect(withTimeout(loadError, 1000, 'too slow')).rejects.not.toBeInstanceOf(TimeoutError);
+    await expect(withTimeout(Promise.reject(new Error('session not found')), 1000, 'too slow')).rejects.toThrow('session not found');
   });
 
   it('decodes base64url tool arguments, so no shell quoting is needed', async () => {

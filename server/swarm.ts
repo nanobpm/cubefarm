@@ -2494,6 +2494,7 @@ export class Swarm {
         sessionId: (id) => {
           a.sessionId = id;
           a.sessionCli = id ? (how.cli ?? 'claude') : null;
+          this.save(); // persist the resumable id: it arrives after the pre-startup save, so a crash would lose it
         },
         browserUrl: (url) => {
           rt.browserUrl = url;
@@ -3894,6 +3895,7 @@ export class Swarm {
         sessionId: (id) => {
           a.sessionId = id;
           a.sessionCli = id && harness === 'claude' ? 'claude' : null;
+          this.save(); // persist the resumable id (and the sessionHarness set above): it arrives after the pre-startup save
         },
         browserUrl: () => undefined,
         screenshot: () => undefined,

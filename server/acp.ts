@@ -58,15 +58,18 @@ export function additionalDirectories(caps: AcpCapabilities | undefined, dirs: s
   return dirs.length && caps?.sessionCapabilities?.additionalDirectories ? dirs : [];
 }
 
+/** A bounded request that didn't settle in time. A distinct type so callers can tell a timeout from a real reply. */
+export class TimeoutError extends Error {}
+
 /**
- * Bounds a request's promise: it fails with `message` after `ms` (the caller's catch kills the child). Long-running
- * `session/prompt` turns pass no timeout — only startup (initialize/session/new/load) is bounded, so an agent that
- * stays alive without answering can't hold a CEO session slot forever.
+ * Bounds a request's promise: it fails with a `TimeoutError` after `ms` (the caller's catch kills the child).
+ * Long-running `session/prompt` turns pass no timeout — only startup (initialize/session/new/load) is bounded, so an
+ * agent that stays alive without answering can't hold a CEO session slot forever.
  */
 export function withTimeout<T>(p: Promise<T>, ms: number | undefined, message: string): Promise<T> {
   if (ms === undefined) return p;
   return new Promise<T>((ok, fail) => {
-    const t = setTimeout(() => fail(new Error(message)), ms);
+    const t = setTimeout(() => fail(new TimeoutError(message)), ms);
     p.then(
       (v) => {
         clearTimeout(t);
