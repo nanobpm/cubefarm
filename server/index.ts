@@ -30,7 +30,7 @@ const swarm = new Swarm(
     ? {
         api: nanoClient(NANO.url, { secret: NANO.secret, auth: NANO.auth }),
         engine: engineClient(NANO.engine, { auth: NANO.engineAuth }),
-        config: { url: NANO.url, pollMs: NANO.pollMs, baseBranch: NANO.baseBranch, book: floorBook },
+        config: { url: NANO.url, pollMs: NANO.pollMs, baseBranch: NANO.baseBranch, secret: NANO.secret, auth: NANO.auth, book: floorBook },
       }
     : undefined,
 );

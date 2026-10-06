@@ -2,8 +2,9 @@
 
 `npx cubefarm --nano http://localhost:3000` (or `CUBEFARM_NANO_URL`) runs the office as an interface to a
 [nano-workforce](https://github.com/nanobpm/nano-workforce) app. nano-workforce plans, implements, reviews and
-merges; the office shows that work and drives it. Its own orchestrator stands down: no CEO sessions, no QA lab, no
-local agent sessions, no auto-assign.
+merges; the office shows that work and drives it. Its own orchestrator stands down: no QA lab, no local agent
+sessions, no auto-assign. With `--nano` an optional ACP CEO (nano-coder or Copilot) still runs for the manager's chat
+(see below); with Claude Code or `--demo` there is no CEO session either.
 
 | In the office | From / to nano-workforce |
 | --- | --- |
@@ -44,8 +45,8 @@ session, as before.
 
 State lives in `nano-state.json` (`demo-nano-state.json` with `--demo`), apart from the usual office's.
 
-Try it without anything real: `node scripts/fake-nano.mjs 4398`, then
-`SWARM_HOME=$PWD/.swarm-home SWARM_PORT=<port> node --import tsx server/index.ts --demo --nano http://localhost:4398`.
+Try it without anything real: `node scripts/fake-nano.mjs 4398` (it serves both the app and a fake engine), then
+`SWARM_HOME=$PWD/.swarm-home SWARM_PORT=<port> node --import tsx server/index.ts --demo --nano http://localhost:4398 --nano-engine http://localhost:4398`.
 
 ## Notes from a live server (0.200.4)
 

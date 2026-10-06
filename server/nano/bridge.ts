@@ -31,8 +31,39 @@ export interface NanoConfig {
   pollMs: number;
   /** Base branch for hand-offs: '' = the repo's default branch; may contain {n} (the issue number). */
   baseBranch: string;
+  /** The app's `x-hook-secret`, so an ACP CEO's fetched skill can reach the same instance (nanoAgentEnv). */
+  secret?: string;
+  /** The app's Authorization header (e.g. "Basic …"), from URL-embedded credentials, for the same reason. */
+  auth?: string;
   /** Where the floors are kept for the office's backend (server/nano/backend.ts). */
   book?: { set(floors: Floor[]): void };
+}
+
+/**
+ * The environment an ACP CEO's fetched agent skill needs to reach the same nano-workforce the office uses: its skill
+ * resolves the target from `NANO_WORKFORCE_URL` (guarded by `NANO_PR_WEBHOOK_SECRET`), not the office's own flags, so
+ * without these it falls back to localhost or gets 401s. URL-embedded Basic Auth is put back into the URL's userinfo.
+ */
+export function nanoAgentEnv(cfg: { url: string; secret?: string; auth?: string }): Record<string, string> {
+  const env: Record<string, string> = {};
+  let url = cfg.url;
+  if (cfg.auth?.startsWith('Basic ')) {
+    try {
+      const creds = Buffer.from(cfg.auth.slice('Basic '.length), 'base64').toString('utf8');
+      const sep = creds.indexOf(':');
+      const user = sep < 0 ? creds : creds.slice(0, sep);
+      const pass = sep < 0 ? '' : creds.slice(sep + 1);
+      const u = new URL(url);
+      u.username = encodeURIComponent(user);
+      if (pass) u.password = encodeURIComponent(pass);
+      url = u.toString().replace(/\/$/, '');
+    } catch {
+      // A URL we can't parse is left as-is: the plain base URL is still better than none.
+    }
+  }
+  env.NANO_WORKFORCE_URL = url;
+  if (cfg.secret) env.NANO_PR_WEBHOOK_SECRET = cfg.secret;
+  return env;
 }
 
 const MAX_LINES_PER_TICK = 200;
@@ -142,6 +173,11 @@ export class NanoBridge {
         if (live.has(gone)) continue;
         this.host.unseat(gone);
         this.seated.delete(gone);
+        // A departed worker is no longer in `seats`, so the follow block below never clears it: flush its stream
+        // here (its last buffered text, then forget the stream) so readers/offsets/following don't leak forever.
+        const stream = this.following.get(gone);
+        if (stream) this.endStream(gone, stream);
+        this.following.delete(gone);
       }
       this.escalations(escalations);
       for (const s of seats) {

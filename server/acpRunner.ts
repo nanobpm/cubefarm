@@ -84,6 +84,8 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(ANTHROPIC_|CLAUDE)/i.test(k)) env[k] = v;
   env.CUBEFARM_OFFICE_URL = `${officeAddress()}/api/office/${token}`;
+  // Nano mode: the configured target + auth under the names the fetched skill reads, so it reaches the office's app.
+  for (const [k, v] of Object.entries(opts.sessionEnv ?? {})) env[k] = v;
 
   const proc = spawn(program.file, [...program.args, ...acpArgs(opts.model)], {
     cwd: opts.cwd,

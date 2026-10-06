@@ -28,6 +28,8 @@ export interface SessionOptions {
   office?: OfficeTools;
   /** The CEO on a harness spoken to over ACP (acpRunner.ts) instead of Claude Code. */
   acp?: Exclude<CeoHarness, 'claude'>;
+  /** Extra env for the session (nano mode: NANO_WORKFORCE_URL / secret, so the CEO's skill reaches the right app). */
+  sessionEnv?: Record<string, string>;
   /** The terminal runtime: the agent's terminal and the CLI to run in it. Without one: an Agent SDK session. */
   terminal?: AgentTerminal;
   cli?: AgentCli;

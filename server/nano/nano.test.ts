@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { NanoBridge, type NanoHost } from './bridge.ts';
+import { NanoBridge, nanoAgentEnv, type NanoHost } from './bridge.ts';
 import type { EngineApi, EngineInstance, EngineJob, NanoApi, NanoEscalation, NanoPr, NanoSupply } from './client.ts';
 import { engineClient, nanoClient } from './client.ts';
 import { BENCH, buildWorld, parseProcess, type ProcessModel } from './floors.ts';
@@ -374,6 +374,24 @@ describe('bridge', () => {
     expect(host.unseat).toHaveBeenCalledWith('w1');
   });
 
+  it('flushes and forgets a departed worker\u2019s stream, not only ones still seated', async () => {
+    // The leak: a worker that vanishes is unseated, but its reader/offset/following entry lived on and its last
+    // buffered line was dropped (the flush only ran for workers still in `seats`). An assistant message with no
+    // trailing newline stays buffered until the stream ends — on departure it must be flushed, not lost.
+    let s = supply;
+    const buffered = JSON.stringify({ nwfTranscriptEvent: 1, kind: 'message', role: 'assistant', text: 'tail' });
+    const { host, bridge } = setup({
+      supply: async () => s,
+      transcript: async (stream, from) => (stream === 'job:j1' && from === 0 ? { status: 'open', nextOffset: 1, entries: [{ offset: 0, chunk: buffered }] } : null),
+    });
+    await bridge.tick();
+    expect(host.log).not.toHaveBeenCalledWith('w1', expect.anything()); // still buffered, nothing emitted yet
+    s = { workers: supply.workers.slice(1) };
+    await bridge.tick();
+    expect(host.unseat).toHaveBeenCalledWith('w1');
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'tail' }]);
+  });
+
   it('unseats a persisted worker the supply never reports (ghost desk after a restart)', async () => {
     // The office kept 'wGhost' at a desk across a restart, but it is gone from nano-workforce. This bridge process
     // never saw it seated, so only reconciling against the host's persisted workers clears it.
@@ -438,5 +456,24 @@ describe('bridge', () => {
     const texts = host.phone.mock.calls.map((c) => c[0] as string);
     expect(texts.filter((t) => t.includes("Can't reach"))).toHaveLength(1);
     expect(texts.some((t) => t.includes('reachable again'))).toBe(true);
+  });
+});
+
+describe('nanoAgentEnv', () => {
+  it('exposes the url and secret under the names an ACP CEO\u2019s skill reads', () => {
+    expect(nanoAgentEnv({ url: 'http://nwf:3000', secret: 's3cr3t' })).toEqual({ NANO_WORKFORCE_URL: 'http://nwf:3000', NANO_PR_WEBHOOK_SECRET: 's3cr3t' });
+  });
+
+  it('embeds Basic auth back into the url userinfo and omits a missing secret', () => {
+    const auth = `Basic ${Buffer.from('user:pass').toString('base64')}`;
+    const env = nanoAgentEnv({ url: 'http://nwf:3000', auth });
+    const u = new URL(env.NANO_WORKFORCE_URL);
+    expect(u.username).toBe('user');
+    expect(u.password).toBe('pass');
+    expect(env.NANO_PR_WEBHOOK_SECRET).toBeUndefined();
+  });
+
+  it('leaves the url plain when there is no auth', () => {
+    expect(nanoAgentEnv({ url: 'http://nwf:3000' })).toEqual({ NANO_WORKFORCE_URL: 'http://nwf:3000' });
   });
 });

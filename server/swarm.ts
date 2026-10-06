@@ -57,7 +57,7 @@ import { effectiveModel } from '../shared/models.ts';
 import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, weatherSettings, worldEventSettings } from '../shared/outside.ts';
 import { DEFAULT_THEME_SETTINGS, dueGreeting, themeSettings } from '../shared/themes.ts';
 import { CEO_HARNESSES, CEO_ID, DEFAULT_DOG_NAME, INSTALL_STEP } from '../shared/types.ts';
-import { NanoBridge, type NanoConfig } from './nano/bridge.ts';
+import { NanoBridge, nanoAgentEnv, type NanoConfig } from './nano/bridge.ts';
 import type { EngineApi, NanoApi } from './nano/client.ts';
 import type { ScreenLine } from './nano/mirror.ts';
 import { BENCH, type Floor, type Seat } from './nano/floors.ts';
@@ -572,13 +572,17 @@ export class Swarm {
   /** nano mode (`--nano <url>`): nano-workforce runs the work, the office shows it. */
   private nano: NanoBridge | null = null;
   private nanoSeating = false;
+  private nanoEnv: Record<string, string> = {}; // NANO_WORKFORCE_URL / secret for an ACP CEO's fetched skill
   private toldStuck = new Set<string>(); // `${agentId}:${endedAt}`: agents in an error the manager was notified about
 
   constructor(
     private backend: Backend,
     nano?: { api: NanoApi; engine: EngineApi; config: NanoConfig },
   ) {
-    if (nano) this.nano = new NanoBridge(nano.api, nano.engine, this.nanoHost(), nano.config);
+    if (nano) {
+      this.nano = new NanoBridge(nano.api, nano.engine, this.nanoHost(), nano.config);
+      this.nanoEnv = nanoAgentEnv(nano.config);
+    }
     this.weather = new WeatherService({
       api: backend.weather,
       file: path.join(HOME_DIR, backend.demo ? 'demo-weather.json' : 'weather.json'),
@@ -3853,6 +3857,7 @@ export class Swarm {
         additionalDirectories: this.state.repos.filter((r) => this.repoRt.get(r.id)?.cloneStatus === 'ready').map((r) => this.backend.mainDir(r.fullName)),
         role: 'ceo',
         office: this.officeTools(),
+        ...(this.nano && harness !== 'claude' ? { sessionEnv: this.nanoEnv } : {}),
         ...how,
       },
       {
