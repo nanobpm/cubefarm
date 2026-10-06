@@ -412,6 +412,31 @@ describe('bridge', () => {
     expect(order.indexOf('log w1')).toBeLessThan(order.indexOf('unseat w1'));
   });
 
+  it('fetches a departed worker’s post-poll entries before unseating, not only its buffer', async () => {
+    // The class: on departure the stream is forgotten, but the follow pass only visits current seats, so any
+    // transcript entries written since the last poll (not yet in the local reader) would never be fetched and
+    // the worker's final output is lost. The departure path must fetch once more before ending the stream.
+    let s = supply;
+    const line = (t: string) => JSON.stringify({ nwfTranscriptEvent: 1, kind: 'message', role: 'assistant', text: t + '\n' });
+    const { host, bridge } = setup({
+      supply: async () => s,
+      transcript: async (stream, from) =>
+        stream !== 'job:j1'
+          ? null
+          : from === 0
+            ? { status: 'open', nextOffset: 1, entries: [{ offset: 0, chunk: line('first') }] }
+            : from === 1
+              ? { status: 'open', nextOffset: 2, entries: [{ offset: 1, chunk: line('second') }] }
+              : null,
+    });
+    await bridge.tick();
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'first' }]);
+    s = { workers: supply.workers.slice(1) };
+    await bridge.tick();
+    expect(host.unseat).toHaveBeenCalledWith('w1');
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'second' }]); // the post-poll entry, not lost
+  });
+
   it('unseats a persisted worker the supply never reports (ghost desk after a restart)', async () => {
     // The office kept 'wGhost' at a desk across a restart, but it is gone from nano-workforce. This bridge process
     // never saw it seated, so only reconciling against the host's persisted workers clears it.

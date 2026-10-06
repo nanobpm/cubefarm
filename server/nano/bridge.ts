@@ -173,9 +173,14 @@ export class NanoBridge {
         if (live.has(gone)) continue;
         // A departed worker is no longer in `seats`, so the follow block below never clears it: flush its stream
         // here (its last buffered text, then forget the stream) so readers/offsets/following don't leak forever.
-        // Flush before unseating: the real host's unseat removes the worker, so a log after it would be dropped.
+        // Fetch once more before flushing: `follow` below only visits current seats, so entries written since the
+        // last poll would otherwise be lost. Flush before unseating: the real host's unseat removes the worker, so
+        // a log after it would be dropped.
         const stream = this.following.get(gone);
-        if (stream) this.endStream(gone, stream);
+        if (stream) {
+          await this.follow(gone, stream);
+          this.endStream(gone, stream);
+        }
         this.following.delete(gone);
         this.host.unseat(gone);
         this.seated.delete(gone);
@@ -183,7 +188,12 @@ export class NanoBridge {
       this.escalations(escalations);
       for (const s of seats) {
         const was = this.following.get(s.instance);
-        if (was && was !== s.stream) this.endStream(s.instance, was);
+        if (was && was !== s.stream) {
+          // Same as the departed-worker flush: pull anything written to the old stream since the last poll before
+          // forgetting it, since the follow pass below only fetches the worker's new stream.
+          await this.follow(s.instance, was);
+          this.endStream(s.instance, was);
+        }
         if (s.stream) this.following.set(s.instance, s.stream);
         else this.following.delete(s.instance);
       }

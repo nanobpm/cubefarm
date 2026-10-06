@@ -61,6 +61,9 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
   let sessionId: string | null = null;
   let stderrTail = '';
   let child: ChildProcessWithoutNullStreams | null = null;
+  // The last few stderr lines, trimmed: the one thing a failed child can tell us about why. Both the exit path and
+  // the startup-timeout path report it, so a setup/auth failure that explains itself on stderr isn't swallowed.
+  const stderrWhy = () => stderrTail.trim().split(/\r?\n/).slice(-3).join(' ').slice(0, 400);
 
   const finish = (r: Omit<SessionResult, 'costUsd' | 'turns'>) => {
     if (finished) return;
@@ -161,7 +164,7 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
   proc.on('exit', (code) => {
     for (const p of pending.values()) p.fail(new Error('exited'));
     pending.clear();
-    const why = stderrTail.trim().split(/\r?\n/).slice(-3).join(' ').slice(0, 400);
+    const why = stderrWhy();
     finish({ ok: false, text: lastText, errors: [`${harness} exited (code ${code})${why ? `: ${why}` : ''}`] });
   });
 
@@ -220,7 +223,8 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
       cb.sessionId(sessionId);
       void runQueue();
     } catch (err) {
-      finish({ ok: false, text: '', errors: [`${harness} over ACP: ${(err as Error).message}`] });
+      const why = stderrWhy();
+      finish({ ok: false, text: '', errors: [`${harness} over ACP: ${(err as Error).message}${why ? `: ${why}` : ''}`] });
     }
   })();
 

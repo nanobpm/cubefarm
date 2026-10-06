@@ -36,8 +36,10 @@ Settings → The CEO → **Runs on**: Claude Code (the default), nano-coder or G
 `<cli> --acp` (Agent Client Protocol over stdio), with the CEO's model from the CEO tab (`--model`; empty: the
 harness's own default). ACP has no system prompt, so the CEO's instructions go with each new session's first
 prompt. nano-coder has no MCP, so the office tools are a shell command instead:
-`node <SWARM_HOME>/bin/cubefarm-office.cjs <tool> '<json>'`, which posts to `/api/office/<session token>/<tool>`
-(the CEO's instructions list the tools and their arguments).
+`node <SWARM_HOME>/bin/cubefarm-office.cjs <tool> -b <base64url of the JSON arguments>`, which posts to
+`/api/office/<session token>/<tool>` (the CEO's instructions list the tools and their arguments). The arguments go
+base64url-encoded after `-b` (use `-b e30` for none) so they survive cmd.exe, PowerShell and POSIX shells unquoted;
+`-` reads the JSON from stdin instead.
 
 With `--nano`, an ACP CEO also gets nano-workforce's agent skill (`GET /app/api/agent/skill`, same base URL and
 auth, fetched again after ten minutes) in its instructions. Phone texts that aren't `status` / `answer` / `start` go to
