@@ -15,7 +15,9 @@ local agent sessions, no auto-assign.
 | Texting `answer <id> [choice] note` | `POST /actions/complete-user-task` with the form's variables |
 | Texting `status` | PRs in flight and open escalations |
 
-Floors are still connected in the lobby: the office reads issues and PRs for the whiteboard from GitHub as usual.
+Floors are still shown in the lobby, but nothing here touches GitHub: the office serves the whiteboard's issues and
+PRs from what the bridge last saw (`FloorBook`, `server/nano/backend.ts`) and can't change GitHub — nano-workforce
+does the work.
 Hire workers with `c8ctl nano hire` / `c8 nano workforce`: they take a desk when they connect.
 
 | env | default | |

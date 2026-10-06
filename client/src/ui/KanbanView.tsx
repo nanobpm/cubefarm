@@ -92,7 +92,7 @@ export function KanbanView({ repoId, embedded }: { repoId: string; embedded?: bo
   const [showForm, setShowForm] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
 
-  if (repo?.nanoBoard && !embedded) return <NanoBoardView repo={repo} />;
+  if (repo?.nanoBoard) return <NanoBoardView repo={repo} embedded={embedded} />;
   if (!repo || !cols) {
     return (
       <Frame title="Kanban" embedded={embedded}>

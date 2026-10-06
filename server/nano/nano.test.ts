@@ -141,6 +141,58 @@ describe('mirror', () => {
     expect(w.floors[1].issues[0]).toMatchObject({ number: 2251799813690001, labels: ['needs-human', 'plan-review'] });
   });
 
+  it('suppresses only the user task that has an escalation, not every human step', () => {
+    const w = world({
+      prs: [],
+      instances: [inst('500')],
+      jobs: [],
+      escalations: [esc({ processKey: '500', userTaskKey: '501', subjectTitle: 'Approve A' })],
+      elements: new Map([
+        [
+          '500',
+          [
+            { elementInstanceKey: '501', processInstanceKey: '500', elementId: 'merge-approval', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' },
+            { elementInstanceKey: '502', processInstanceKey: '500', elementId: 'merge-approval', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' },
+          ],
+        ],
+      ]),
+    });
+    const titles = w.floors[0].issues.map((i) => i.title);
+    expect(titles.filter((t) => t.startsWith('🙋')).length).toBe(1); // ut 502 only; ut 501's escalation sticky replaces its 🙋
+    expect(titles.some((t) => t.startsWith('🚨'))).toBe(true);
+  });
+
+  it('marks a user-task shape as an escalation only when the escalation is its own', () => {
+    const XML2 = `<?xml version="1.0"?><bpmn:definitions><bpmn:process id="two-humans">
+      <bpmn:userTask id="approve-a" name="Approve A" />
+      <bpmn:userTask id="approve-b" name="Approve B" />
+    </bpmn:process><bpmndi:BPMNDiagram><bpmndi:BPMNPlane>
+      <bpmndi:BPMNShape id="sa" bpmnElement="approve-a"><dc:Bounds x="10" y="10" width="80" height="60" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="sb" bpmnElement="approve-b"><dc:Bounds x="120" y="10" width="80" height="60" /></bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane></bpmndi:BPMNDiagram></bpmn:definitions>`;
+    const w = world({
+      prs: [],
+      instances: [inst('600', { processDefinitionKey: 'd3', processDefinitionId: 'two-humans' })],
+      jobs: [],
+      escalations: [esc({ processKey: '600', userTaskKey: '601', subjectTitle: 'Approve A' })],
+      elements: new Map([
+        [
+          '600',
+          [
+            { elementInstanceKey: '601', processInstanceKey: '600', elementId: 'approve-a', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' },
+            { elementInstanceKey: '602', processInstanceKey: '600', elementId: 'approve-b', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' },
+          ],
+        ],
+      ]),
+      models: new Map<string, ProcessModel>([['d3', parseProcess(XML2)]]),
+    });
+    const b = w.floors[0].board;
+    if (b.kind !== 'process') throw new Error('not a process board');
+    const by = Object.fromEntries(b.shapes.map((s) => [s.id, s]));
+    expect(by['approve-a']).toMatchObject({ waiting: 'escalation' });
+    expect(by['approve-b']).toMatchObject({ waiting: 'human' }); // a different user task's escalation must not bleed onto it
+  });
+
   it('seats workers at the desk of their step, on the root floor; idle ones on the bench', () => {
     const w = world();
     expect(w.seats[0]).toMatchObject({ instance: 'w1', floorId: 'convergence-loop/app-pr45', desk: 0, doing: 'Review round', task: 'fix', prNumber: 45, stream: 'job:j1' });
@@ -277,7 +329,7 @@ describe('engine client', () => {
 });
 
 describe('bridge', () => {
-  const setup = (over: Partial<NanoApi> = {}) => {
+  const setup = (over: Partial<NanoApi> = {}, engineOver: Partial<EngineApi> = {}) => {
     const api: NanoApi = {
       supply: async () => supply,
       activePrs: async () => [pr({ processKey: '100' })],
@@ -293,8 +345,9 @@ describe('bridge', () => {
       activeJobs: async () => jobs,
       elements: async () => [],
       processXml: vi.fn(async () => XML),
+      ...engineOver,
     };
-    const host = { floors: vi.fn(async () => undefined), seat: vi.fn(), unseat: vi.fn(), log: vi.fn(), phone: vi.fn(), needsHuman: vi.fn() } satisfies NanoHost;
+    const host = { floors: vi.fn(async () => undefined), seat: vi.fn(), unseat: vi.fn(), log: vi.fn(), phone: vi.fn(), needsHuman: vi.fn(), workers: vi.fn((): string[] => []) } satisfies NanoHost;
     const bridge = new NanoBridge(api, engine, host, { url: 'http://nwf', pollMs: 1000, baseBranch: '' });
     return { api, engine, host, bridge };
   };
@@ -319,6 +372,35 @@ describe('bridge', () => {
     s = { workers: supply.workers.slice(1) };
     await bridge.tick();
     expect(host.unseat).toHaveBeenCalledWith('w1');
+  });
+
+  it('unseats a persisted worker the supply never reports (ghost desk after a restart)', async () => {
+    // The office kept 'wGhost' at a desk across a restart, but it is gone from nano-workforce. This bridge process
+    // never saw it seated, so only reconciling against the host's persisted workers clears it.
+    const { host, bridge } = setup();
+    host.workers.mockReturnValue(['wGhost']);
+    await bridge.tick();
+    expect(host.unseat).toHaveBeenCalledWith('wGhost');
+  });
+
+  it('keys a child instance\u2019s elements under its root process (call activities on the root floor)', async () => {
+    const roots = [
+      inst('200', { processDefinitionId: 'delivery-graph-54bde3dae2fa', processDefinitionKey: 'd2' }),
+      inst('300', { processDefinitionId: 'delivery-graph-54bde3dae2fa', processDefinitionKey: 'd2', parentProcessInstanceKey: '200' }),
+    ];
+    const { host, bridge } = setup(
+      { supply: async () => ({ workers: [] }), activePrs: async () => [], escalations: async () => [] },
+      {
+        activeInstances: async () => roots,
+        activeJobs: async () => [],
+        // The waiting user task lives on the child instance 300; it must surface on root 200's floor.
+        elements: async (key) => (key === '300' ? [{ elementInstanceKey: '900', processInstanceKey: '300', elementId: 'merge-approval', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' }] : []),
+      },
+    );
+    await bridge.tick();
+    const floors = (host.floors.mock.calls[0] as unknown as [{ id: string; issues: { title: string }[] }[]])[0];
+    const dg = floors.find((f) => f.id.startsWith('delivery-graph'));
+    expect(dg?.issues.some((i) => i.title.includes('Approve merge'))).toBe(true);
   });
 
   it('starts an issue from a text: default branch with confirmation, or a templated base', async () => {

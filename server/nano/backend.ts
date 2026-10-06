@@ -41,7 +41,7 @@ export function createNanoBackend(book: FloorBook, appUrl: string, opts: { demo?
   };
   const backend: Backend = {
     ...demo,
-    demo: false,
+    demo: opts.demo ?? false,
     demoCandidate: undefined,
     demoTeam: undefined,
     demoDoctor: undefined,

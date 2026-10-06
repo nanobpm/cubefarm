@@ -6,7 +6,7 @@
  */
 import type { EngineApi, EngineElement, NanoApi, NanoEscalation, NanoPr } from './client.ts';
 import type { NanoBoard } from '../../shared/types.ts';
-import { BENCH, buildWorld, parseProcess, type Floor, type ProcessModel, type Seat } from './floors.ts';
+import { BENCH, buildWorld, parseProcess, rootsOf, type Floor, type ProcessModel, type Seat } from './floors.ts';
 import { escalationMessage, escalationRef, parseAnswer, TranscriptReader, type ScreenLine } from './mirror.ts';
 
 export interface NanoHost {
@@ -22,6 +22,8 @@ export interface NanoHost {
   phone(text: string): void;
   /** The manager should hear about this one (notifications). */
   needsHuman(title: string, body: string): void;
+  /** The worker instances the office still has at desks (persisted across office restarts): to reconcile ghosts. */
+  workers(): string[];
 }
 
 export interface NanoConfig {
@@ -113,11 +115,11 @@ export class NanoBridge {
             if (xml) this.models.set(k, parseProcess(xml));
           }),
       );
-      const roots = instances.filter((i) => !i.parentProcessInstanceKey || !instances.some((x) => x.processInstanceKey === i.parentProcessInstanceKey));
+      const rootKeys = rootsOf(instances);
       const elements = new Map<string, EngineElement[]>();
       await Promise.all(
         instances.map(async (i) => {
-          const root = roots.find((r) => r.processInstanceKey === i.processInstanceKey)?.processInstanceKey ?? i.processInstanceKey;
+          const root = rootKeys.get(i.processInstanceKey) ?? i.processInstanceKey;
           const els = await this.engine.elements(i.processInstanceKey).catch(() => []);
           elements.set(root, [...(elements.get(root) ?? []), ...els]);
         }),
@@ -132,7 +134,12 @@ export class NanoBridge {
         this.host.seat(s);
         this.seated.add(s.instance);
       }
-      for (const gone of [...this.seated].filter((i) => !seats.some((s) => s.instance === i))) {
+      // Reconcile against the office's persisted workers too, not only ones this process has seen: a worker that
+      // vanished while the office was down would otherwise stay a ghost desk forever. `seats` is the complete supply
+      // snapshot, so anyone the host still has but supply no longer reports is gone.
+      const live = new Set(seats.map((s) => s.instance));
+      for (const gone of new Set([...this.seated, ...this.host.workers()])) {
+        if (live.has(gone)) continue;
         this.host.unseat(gone);
         this.seated.delete(gone);
       }

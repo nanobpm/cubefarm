@@ -209,7 +209,7 @@ export function buildWorld(input: WorldInput): World {
       const name = el.elementName || info?.name || el.elementId;
       const key = Number(el.elementInstanceKey) || 0;
       if (/USER_TASK/i.test(el.type)) {
-        if (escalations.length) continue; // the escalation sticky says it better
+        if (escalations.some((e) => e.userTaskKey === el.elementInstanceKey)) continue; // this task's own escalation sticky says it better
         issues.push({ number: key, title: `🙋 ${name}`, body: 'A person has to complete this step.', url: '', labels: ['waiting', 'user-task'], createdAt: inst.startDate });
       } else if (/CATCH_EVENT|RECEIVE_TASK/i.test(el.type)) {
         issues.push({ number: key, title: `⏳ ${name}`, body: 'Waiting for an event or timer.', url: '', labels: ['waiting'], createdAt: inst.startDate });
@@ -269,7 +269,7 @@ export function processBoard(f: Floor, input: WorldInput, seats: Seat[]): NanoBo
     const waiting: NanoShape['waiting'] = !active.length
       ? null
       : /userTask/i.test(info.kind)
-        ? escalations.length
+        ? active.some((e) => escalations.some((x) => x.userTaskKey === e.elementInstanceKey))
           ? 'escalation'
           : 'human'
         : /CatchEvent|receiveTask/i.test(info.kind)

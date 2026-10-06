@@ -1227,7 +1227,7 @@ export class Swarm {
   }
 
   private running() {
-    return this.state.agents.filter((a) => BUSY.includes(a.status)).length;
+    return this.state.agents.filter((a) => BUSY.includes(a.status) && !a.nanoWorker).length;
   }
 
   /** True when the manager has set a session limit and every slot is taken. */
@@ -4528,6 +4528,7 @@ export class Swarm {
       },
       phone: (text: string) => void this.postMessage('office', text),
       needsHuman: (title: string, body: string) => this.notifier.notify('needsHuman', title, body, title),
+      workers: () => this.state.agents.filter((a) => a.nanoWorker).map((a) => a.nanoWorker as string),
     };
   }
 
