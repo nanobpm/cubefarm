@@ -110,15 +110,26 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
   // ---------- JSON-RPC ----------
   let seq = 0;
   const pending = new Map<number, { ok: (v: unknown) => void; fail: (e: Error) => void }>();
-  const write = (m: RpcMessage) => {
-    if (!proc.stdin.writable) return;
-    proc.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...m })}\n`);
+  /** false when the message couldn't go out: stdin is already closed, or the write fails synchronously (EPIPE). */
+  const write = (m: RpcMessage): boolean => {
+    if (!proc.stdin.writable) return false;
+    try {
+      proc.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...m })}\n`);
+      return true;
+    } catch {
+      return false;
+    }
   };
   const request = <T>(method: string, params: Record<string, unknown>) =>
     new Promise<T>((ok, fail) => {
       const id = ++seq;
       pending.set(id, { ok: ok as (v: unknown) => void, fail });
-      write({ id, method, params });
+      // session/prompt has no timeout by design, so a write that never lands would hold the request (and the CEO's
+      // session slot) forever when the child closed its input without exiting. Fail it instead of waiting for 'exit'.
+      if (!write({ id, method, params })) {
+        pending.delete(id);
+        fail(new Error(`${harness} is not accepting input (stdin closed)`));
+      }
     });
 
   const titles = new Map<string, string>();
