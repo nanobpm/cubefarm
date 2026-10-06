@@ -23,6 +23,10 @@ export const workerCli = (a: Pick<Agent, 'cli' | 'role'>, settings: Pick<SwarmSe
 /** The CLI whose model names fit the CEO: Claude Code's for Claude; an ACP harness names its own (no Claude list). */
 const ceoModelCli = (settings: Pick<SwarmSettings, 'ceoHarness'>): AgentCli => (settings.ceoHarness === 'claude' ? 'claude' : 'opencode');
 
+/** An ACP CEO's model field offers no suggestions: the harness names its own models, so a Claude list would mislead. */
+const modelList = (agent: Agent, cli: AgentCli, acpCeo: boolean): string[] =>
+  agent.role === 'ceo' && acpCeo ? [] : modelSuggestions(cli);
+
 type Patch = Parameters<typeof api.updateAgent>[1];
 
 async function save(id: string, patch: Patch) {
@@ -52,6 +56,8 @@ interface FieldProps {
   id?: string;
   className?: string;
   style?: CSSProperties;
+  /** Overrides the store's settings (tests); production callers leave it undefined. */
+  settings?: SwarmSettings;
 }
 
 export function NameInput({ agent, id, className = 'inline', style }: FieldProps) {
@@ -80,8 +86,9 @@ export function CliSelect({ agent, id, style }: FieldProps) {
   );
 }
 
-export function ModelInput({ agent, id, className = 'inline', style }: FieldProps) {
-  const settings = useStore((s) => s.settings);
+export function ModelInput({ agent, id, className = 'inline', style, settings: override }: FieldProps) {
+  const stored = useStore((s) => s.settings);
+  const settings = override ?? stored;
   const listId = useId();
   const cli = agent.role === 'ceo' ? ceoModelCli(settings) : workerCli(agent, settings);
   const acpCeo = agent.role === 'ceo' && settings.ceoHarness !== 'claude';
@@ -100,7 +107,7 @@ export function ModelInput({ agent, id, className = 'inline', style }: FieldProp
         onBlur={(e) => e.target.value !== agent.model && void save(agent.id, { model: e.target.value })}
       />
       <datalist id={listId}>
-        {modelSuggestions(cli).map((m) => (
+        {modelList(agent, cli, acpCeo).map((m) => (
           <option key={m} value={m} />
         ))}
       </datalist>
