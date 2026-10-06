@@ -18,13 +18,22 @@ import { screenStatus } from './screenReply.ts';
 import { parseSendBackNote } from './sendBack.ts';
 import { PresenceHub } from './presence.ts';
 import { HttpError, Swarm } from './swarm.ts';
-import { nanoClient } from './nano/client.ts';
+import { engineClient, nanoClient } from './nano/client.ts';
+import { createNanoBackend, FloorBook } from './nano/backend.ts';
 
+// In nano mode the floors are nano-workforce's running processes: the bridge keeps the book, the backend serves it.
+const floorBook = new FloorBook();
 const swarm = new Swarm(
-  DEMO ? createDemoBackend(DEMO_SCALE) : realBackend,
-  NANO ? { api: nanoClient(NANO.url, { secret: NANO.secret }), config: { url: NANO.url, pollMs: NANO.pollMs, baseBranch: NANO.baseBranch } } : undefined,
+  NANO ? createNanoBackend(floorBook, NANO.url) : DEMO ? createDemoBackend(DEMO_SCALE) : realBackend,
+  NANO
+    ? {
+        api: nanoClient(NANO.url, { secret: NANO.secret }),
+        engine: engineClient(NANO.engine, { auth: NANO.engineAuth }),
+        config: { url: NANO.url, pollMs: NANO.pollMs, baseBranch: NANO.baseBranch, book: floorBook },
+      }
+    : undefined,
 );
-if (NANO) console.log(`nano-workforce mode: ${NANO.url} (polling every ${NANO.pollMs} ms)`);
+if (NANO) console.log(`nano-workforce mode: ${NANO.url}, engine ${NANO.engine} (polling every ${NANO.pollMs} ms)`);
 // Who else is in the 3D office (shared presence): relayed between tabs over /ws, never saved. The demo adds fake visitors.
 const presence = new PresenceHub({ demo: DEMO });
 // Sessions the office picks back up while it starts need the address their CLIs call back on before it listens.

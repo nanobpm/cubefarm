@@ -27,6 +27,7 @@ const HELP = `
     --floors <n> --agents <n>
                  with --demo: a bigger company, n floors with n people each (up to 20 and 15)
     --nano <url> nano-workforce runs the work (its app URL, e.g. http://localhost:3000); the office shows it
+    --nano-engine <url> its Camunda engine (default: the app's host on :8080)
     --no-open    don't open the browser
     -v, --version
     -h, --help
@@ -54,6 +55,7 @@ try {
       port: { type: 'string', short: 'p' },
       demo: { type: 'boolean' },
       nano: { type: 'string' },
+      'nano-engine': { type: 'string' },
       floors: { type: 'string' },
       agents: { type: 'string' },
       'no-open': { type: 'boolean' },
@@ -276,6 +278,7 @@ if (!fs.existsSync(entry)) fail(`${path.relative(process.cwd(), entry) || entry}
 process.env.SWARM_PORT = String(port);
 if (demo) process.env.SWARM_DEMO = '1';
 if (values.nano) process.env.CUBEFARM_NANO_URL = values.nano;
+if (values['nano-engine']) process.env.CUBEFARM_NANO_ENGINE_URL = values['nano-engine'];
 if (values.floors) process.env.SWARM_DEMO_FLOORS = values.floors;
 if (values.agents) process.env.SWARM_DEMO_AGENTS = values.agents;
 process.setSourceMapsEnabled(true);

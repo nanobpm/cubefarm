@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { NanoBridge, type NanoHost } from './bridge.ts';
-import type { NanoApi, NanoEscalation, NanoPr, NanoSupply } from './client.ts';
-import { nanoClient } from './client.ts';
-import { chunkLines, escalationMessage, escalationRef, parseAnswer, parseRef, seatsFor, TranscriptReader, workerName } from './mirror.ts';
+import type { EngineApi, EngineInstance, EngineJob, NanoApi, NanoEscalation, NanoPr, NanoSupply } from './client.ts';
+import { engineClient, nanoClient } from './client.ts';
+import { BENCH, buildWorld, parseProcess, type ProcessModel } from './floors.ts';
+import { chunkLines, escalationMessage, escalationRef, parseAnswer, parseRef, TranscriptReader, workerName } from './mirror.ts';
 
 const pr = (over: Partial<NanoPr> = {}): NanoPr => ({
   prKey: 'k',
@@ -42,10 +43,51 @@ const supply: NanoSupply = {
     { instance: 'w4', identity: 'fleet/qwen', stream: 's4', jobKeys: [], live: false, staleMs: 99 },
   ],
   correlations: [
-    { jobKey: 'j1', stream: 'job:j1', bpmnProcessId: 'plan-fanout', elementId: 'implement-task', planKey: 'acme/app#12' },
-    { jobKey: 'j3', stream: 'job:j3', bpmnProcessId: 'convergence-loop', elementId: 'review-round', planKey: 'Acme/App#45' },
+    { jobKey: 'j1', stream: 'job:j1' },
+    { jobKey: 'j3', stream: 'job:j3' },
   ],
 };
+
+const XML = `<?xml version="1.0"?><bpmn:definitions><bpmn:process id="convergence-loop">
+  <bpmn:serviceTask id="review-round" name="Review round (agent)"><bpmn:extensionElements><zeebe:taskDefinition type="senior:pr-review" /></bpmn:extensionElements></bpmn:serviceTask>
+  <bpmn:serviceTask id="persist-round" name="Record round"><bpmn:extensionElements><zeebe:taskDefinition type="pr.persist-round" /></bpmn:extensionElements></bpmn:serviceTask>
+  <bpmn:serviceTask id="adversarial-review" name="Adversarial review (agent)"><bpmn:extensionElements><zeebe:taskDefinition type="senior:adversarial-review" /></bpmn:extensionElements></bpmn:serviceTask>
+  <bpmn:userTask id="merge-approval" name="Approve merge (human)" />
+  <bpmn:intermediateCatchEvent id="wait-review" name="Wait: review ready" />
+</bpmn:process></bpmn:definitions>`;
+
+const inst = (key: string, over: Partial<EngineInstance> = {}): EngineInstance => ({
+  processInstanceKey: key,
+  processDefinitionKey: 'd1',
+  processDefinitionId: 'convergence-loop',
+  parentProcessInstanceKey: null,
+  startDate: `2026-10-0${key.length}T00:00:00Z`,
+  ...over,
+});
+const job = (jobKey: string, worker: string, processInstanceKey: string, elementId = 'review-round'): EngineJob => ({
+  jobKey,
+  worker,
+  processInstanceKey,
+  elementId,
+  type: 'senior:pr-review',
+  state: 'CREATED',
+  processDefinitionId: 'convergence-loop',
+  processDefinitionKey: 'd1',
+});
+const instances = [inst('100'), inst('200', { processDefinitionId: 'delivery-graph-54bde3dae2fa', processDefinitionKey: 'd2' }), inst('300', { parentProcessInstanceKey: '200' })];
+const jobs = [job('j1', 'w1', '100'), job('j3', 'w3', '300', 'adversarial-review')];
+const world = (over: Partial<Parameters<typeof buildWorld>[0]> = {}) =>
+  buildWorld({
+    supply,
+    prs: [pr({ processKey: '100' })],
+    escalations: [esc({ processKey: '200', subjectTitle: 'Ship the graph' })],
+    instances,
+    jobs,
+    elements: new Map([['100', [{ elementInstanceKey: '101', processInstanceKey: '100', elementId: 'adversarial-review', type: 'SERVICE_TASK' }, { elementInstanceKey: '102', processInstanceKey: '100', elementId: 'wait-review', type: 'INTERMEDIATE_CATCH_EVENT' }]]]),
+    models: new Map<string, ProcessModel>([['d1', parseProcess(XML)], ['d2', parseProcess(XML)]]),
+    names: new Map(),
+    ...over,
+  });
 
 describe('mirror', () => {
   it('parses refs and URLs', () => {
@@ -54,18 +96,41 @@ describe('mirror', () => {
     expect(parseRef('nope')).toBeNull();
   });
 
-  it('seats workers on the floor of their work', () => {
-    const seats = seatsFor(supply, [pr()], ['acme/app']);
-    expect(seats[0]).toMatchObject({ name: 'copilot-1', repoId: 'acme/app', status: 'working', task: 'issue', issueNumber: 12, stream: 'job:j1' });
-    expect(seats[1]).toMatchObject({ status: 'idle', repoId: null, stream: null });
-    expect(seats[2]).toMatchObject({ repoId: 'acme/app', task: 'fix', prNumber: 45, issueTitle: 'Add login' });
-    expect(seats[3]).toMatchObject({ status: 'stopped', live: false });
+  it('reads agent steps (stations) and named elements from BPMN', () => {
+    const m = parseProcess(XML);
+    expect(m.stations).toEqual([
+      { elementId: 'review-round', name: 'Review round', jobType: 'senior:pr-review' },
+      { elementId: 'adversarial-review', name: 'Adversarial review', jobType: 'senior:adversarial-review' },
+    ]);
+    expect(m.elements.get('merge-approval')).toMatchObject({ name: 'Approve merge (human)', kind: 'userTask' });
   });
 
-  it('prefers the PR a worker holds the lease on', () => {
-    const seats = seatsFor(supply, [pr({ activeWorker: 'w2', number: 9 })], ['acme/app']);
-    expect(seats[1]).toMatchObject({ prNumber: null }); // idle: no job, lease alone doesn't seat it
-    expect(seatsFor({ workers: [{ ...supply.workers[1], jobKeys: ['x'] }] }, [pr({ activeWorker: 'w2', number: 9 })], ['acme/app'])[0]).toMatchObject({ prNumber: 9, repoId: 'acme/app' });
+  it('makes a floor per root process, named after its PR or its definition', () => {
+    const w = world();
+    expect(w.floors.map((f) => f.id)).toEqual(['convergence-loop/app-pr45', 'delivery-graph/54bde3dae2fa']);
+    expect(w.floors[0].pulls[0]).toMatchObject({ number: 45, state: 'OPEN' });
+    expect(w.floors[0].description).toMatch(/reviewing · round 2/);
+    expect(w.floors[1].description).toBe('Ship the graph');
+  });
+
+  it('puts what waits on the whiteboard: escalations, events, agent steps with no worker', () => {
+    const w = world();
+    expect(w.floors[0].issues.map((i) => i.title)).toEqual(['🕒 Adversarial review (agent): no worker yet (senior:adversarial-review)', '⏳ Wait: review ready']);
+    expect(w.floors[1].issues[0]).toMatchObject({ number: 2251799813690001, labels: ['needs-human', 'plan-review'] });
+  });
+
+  it('seats workers at the desk of their step, on the root floor; idle ones on the bench', () => {
+    const w = world();
+    expect(w.seats[0]).toMatchObject({ instance: 'w1', floorId: 'convergence-loop/app-pr45', desk: 0, doing: 'Review round', task: 'fix', prNumber: 45, stream: 'job:j1' });
+    expect(w.seats[1]).toMatchObject({ instance: 'w2', floorId: BENCH, desk: null, status: 'idle' });
+    // a call activity's job is on its root's floor
+    expect(w.seats[2]).toMatchObject({ instance: 'w3', floorId: 'delivery-graph/54bde3dae2fa', desk: 1, doing: 'Adversarial review', issueTitle: 'Ship the graph' });
+  });
+
+  it('keeps a floor its name when its PR drops out of view', () => {
+    const names = new Map<string, string>();
+    world({ names });
+    expect(world({ names, prs: [] }).floors[0].id).toBe('convergence-loop/app-pr45');
   });
 
   it('answers escalations with a choice and a note', () => {
@@ -84,15 +149,6 @@ describe('mirror', () => {
     expect(workerName(w)).toBe('copilot 31c3');
     expect(workerName({ ...w, identity: 'fleet/claude-1' })).toBe('claude-1');
     expect(workerName({ ...w, instance: 'omarchy-nano-coder-8f20a93d' })).toBe('coder 8f20');
-  });
-
-  it('seats a worker on the PR it holds when the job has no context (live servers)', () => {
-    const s = seatsFor(
-      { workers: [{ instance: 'h-copilot-ab12cd34', identity: '127.0.0.1', stream: '', family: 'Opus 4.8', jobKeys: ['9'], live: true, staleMs: 0 }], correlations: [{ jobKey: '9', stream: '34:h-copilot-ab12cd34/9' }] },
-      [pr({ activeWorker: 'h-copilot-ab12cd34', status: 'converging', round: 13 })],
-      ['acme/app'],
-    )[0];
-    expect(s).toMatchObject({ repoId: 'acme/app', task: 'fix', prNumber: 45, stream: '34:h-copilot-ab12cd34/9', doing: 'converging · round 13', family: 'Opus 4.8' });
   });
 
   it('reads nwf transcript events', () => {
@@ -146,26 +202,50 @@ describe('client', () => {
   });
 });
 
+describe('engine client', () => {
+  it('searches /v2 and pages with the cursor', async () => {
+    const calls: unknown[] = [];
+    const f = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      calls.push(body);
+      const n = body.page.after ? 1 : 500;
+      return new Response(JSON.stringify({ items: Array.from({ length: n }, (_, i) => ({ jobKey: String(i), worker: i % 2 ? 'w' : '' })), page: { endCursor: 'c1' } }));
+    });
+    const e = engineClient('http://h:8080/', { fetch: f as unknown as typeof fetch });
+    expect((await e.activeJobs()).length).toBe(250);
+    expect(f.mock.calls[0][0]).toBe('http://h:8080/v2/jobs/search');
+    expect(calls[1]).toMatchObject({ filter: { state: 'CREATED' }, page: { after: 'c1' } });
+  });
+});
+
 describe('bridge', () => {
   const setup = (over: Partial<NanoApi> = {}) => {
     const api: NanoApi = {
       supply: async () => supply,
-      activePrs: async () => [pr()],
+      activePrs: async () => [pr({ processKey: '100' })],
       escalations: async () => [esc()],
       transcript: async (stream, from) => (stream === 'job:j1' && from === 0 ? { status: 'open', nextOffset: 3, entries: [{ offset: 0, chunk: 'hello\nworld\n' }] } : null),
       startPlanFanout: vi.fn(async () => ({})),
       completeUserTask: vi.fn(async () => ({})),
       ...over,
     };
-    const host = { repoIds: () => ['acme/app'], seat: vi.fn(), unseat: vi.fn(), log: vi.fn(), phone: vi.fn(), needsHuman: vi.fn() } satisfies NanoHost;
-    const bridge = new NanoBridge(api, host, { url: 'http://nwf', pollMs: 1000, baseBranch: '' });
-    return { api, host, bridge };
+    const engine: EngineApi = {
+      activeInstances: async () => instances,
+      activeJobs: async () => jobs,
+      activeElements: async () => [],
+      processXml: vi.fn(async () => XML),
+    };
+    const host = { floors: vi.fn(async () => undefined), seat: vi.fn(), unseat: vi.fn(), log: vi.fn(), phone: vi.fn(), needsHuman: vi.fn() } satisfies NanoHost;
+    const bridge = new NanoBridge(api, engine, host, { url: 'http://nwf', pollMs: 1000, baseBranch: '' });
+    return { api, engine, host, bridge };
   };
 
-  it('seats, logs and phones once per escalation', async () => {
-    const { host, bridge } = setup();
+  it('opens floors, seats, logs and phones once per escalation', async () => {
+    const { host, engine, bridge } = setup();
     await bridge.tick();
     await bridge.tick();
+    expect(engine.processXml).toHaveBeenCalledTimes(2); // once per definition
+    expect((host.floors.mock.calls[0] as unknown as [{ id: string }[]])[0].map((f) => f.id)).toEqual(['convergence-loop/app-pr45', 'delivery-graph/54bde3dae2fa']);
     expect(host.seat).toHaveBeenCalledTimes(8);
     expect(host.log).toHaveBeenCalledTimes(1);
     expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'hello' }, { kind: 'text', text: 'world' }]);
@@ -182,13 +262,16 @@ describe('bridge', () => {
     expect(host.unseat).toHaveBeenCalledWith('w1');
   });
 
-  it('hands off on the default branch with confirmation, or a templated base', async () => {
-    const { api, bridge } = setup();
-    expect(await bridge.handOff({ fullName: 'acme/app', defaultBranch: 'main' }, 12)).toBe('main');
+  it('starts an issue from a text: default branch with confirmation, or a templated base', async () => {
+    const { api, engine, host, bridge } = setup();
+    expect(await bridge.answer('start acme/app#12')).toMatch(/handed to nano-workforce \(base main\)/);
     expect(api.startPlanFanout).toHaveBeenCalledWith({ issue: 'acme/app#12', baseBranch: 'main', confirmDefaultBase: true });
-    const b2 = new NanoBridge(api, setup().host, { url: '', pollMs: 1000, baseBranch: 'epic/issue-{n}' });
-    expect(await b2.handOff({ fullName: 'acme/app', defaultBranch: 'main' }, 7)).toBe('epic/issue-7');
+    await bridge.answer('start acme/app#13 on develop');
+    expect(api.startPlanFanout).toHaveBeenLastCalledWith({ issue: 'acme/app#13', baseBranch: 'develop' });
+    const b2 = new NanoBridge(api, engine, host, { url: '', pollMs: 1000, baseBranch: 'epic/issue-{n}' });
+    expect(await b2.handOff('acme/app#7')).toBe('epic/issue-7');
     expect(api.startPlanFanout).toHaveBeenLastCalledWith({ issue: 'acme/app#7', baseBranch: 'epic/issue-7' });
+    await expect(bridge.answer('start nonsense')).rejects.toThrow(/owner\/repo#123/);
   });
 
   it('completes the user task from a phone answer', async () => {

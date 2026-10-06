@@ -41,6 +41,8 @@ export interface NanoPr {
   status: string;
   round: number;
   activeWorker: string | null;
+  /** The convergence-loop process instance driving it. */
+  processKey?: string | null;
   openEscalation: { userTaskKey: string; kind: string; summary: string | null } | null;
   updatedAt: string;
 }
@@ -73,6 +75,46 @@ export interface NanoApi {
   transcript(stream: string, from: number): Promise<NanoTranscript | null>;
   startPlanFanout(body: { issue: string; baseBranch: string; confirmDefaultBase?: boolean }): Promise<unknown>;
   completeUserTask(userTaskKey: string, variables: Record<string, unknown>): Promise<unknown>;
+}
+
+/** A process instance the engine is running. */
+export interface EngineInstance {
+  processInstanceKey: string;
+  processDefinitionKey: string;
+  processDefinitionId: string;
+  processDefinitionName?: string | null;
+  parentProcessInstanceKey: string | null;
+  startDate: string;
+  hasIncident?: boolean;
+}
+
+/** A job a worker holds (state CREATED with a worker: activated). */
+export interface EngineJob {
+  jobKey: string;
+  type: string;
+  worker: string;
+  state: string;
+  elementId: string;
+  processInstanceKey: string;
+  processDefinitionId: string;
+  processDefinitionKey: string;
+}
+
+/** Where a token is in a running instance. */
+export interface EngineElement {
+  elementInstanceKey: string;
+  processInstanceKey: string;
+  elementId: string;
+  elementName?: string | null;
+  type: string;
+}
+
+/** The Camunda engine's REST API (v2): what nano-workforce's processes are doing, step by step. Read only. */
+export interface EngineApi {
+  activeInstances(): Promise<EngineInstance[]>;
+  activeJobs(): Promise<EngineJob[]>;
+  activeElements(processInstanceKey: string): Promise<EngineElement[]>;
+  processXml(processDefinitionKey: string): Promise<string>;
 }
 
 export class NanoError extends Error {
@@ -159,5 +201,37 @@ export function nanoClient(base: string, opts: { secret?: string; fetch?: typeof
     },
     startPlanFanout: (body) => call('POST', '/actions/start/plan-fanout', body),
     completeUserTask: (userTaskKey, variables) => call('POST', '/actions/complete-user-task', { userTaskKey, variables, operator: 'cubefarm' }),
+  };
+}
+
+/** The engine behind the app; `base` like http://host:8080 (the /v2 is added). */
+export function engineClient(base: string, opts: { auth?: string; fetch?: typeof fetch; timeoutMs?: number } = {}): EngineApi {
+  const root = `${base.replace(/\/+$/, '').replace(/\/v2$/, '')}/v2`;
+  const doFetch = opts.fetch ?? nodeFetch;
+  const call = async (method: 'GET' | 'POST', p: string, body?: unknown) => {
+    const headers: Record<string, string> = { accept: 'application/json' };
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    if (opts.auth) headers.authorization = opts.auth;
+    const res = await doFetch(`${root}${p}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000) });
+    const text = await res.text();
+    if (!res.ok) throw new NanoError(res.status, `engine ${method} ${p}: ${res.status} ${text.slice(0, 300)}`);
+    return text;
+  };
+  const search = async <T>(what: string, filter: Record<string, unknown>): Promise<T[]> => {
+    const out: T[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const r = JSON.parse(await call('POST', `/${what}/search`, { filter, page: { limit: 500, ...(after ? { after } : {}) } })) as { items: T[]; page: { endCursor?: string | null } };
+      out.push(...r.items);
+      if (r.items.length < 500 || !r.page.endCursor) break;
+      after = r.page.endCursor;
+    }
+    return out;
+  };
+  return {
+    activeInstances: () => search<EngineInstance>('process-instances', { state: 'ACTIVE' }),
+    activeJobs: async () => (await search<EngineJob>('jobs', { state: 'CREATED' })).filter((j) => j.worker),
+    activeElements: (key) => search<EngineElement>('element-instances', { state: 'ACTIVE', processInstanceKey: key }),
+    processXml: (key) => call('GET', `/process-definitions/${key}/xml`),
   };
 }

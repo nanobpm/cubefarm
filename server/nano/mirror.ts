@@ -1,9 +1,8 @@
 /**
- * Pure mapping from nano-workforce's state onto the office: which worker sits on which floor doing what, how its
+ * Pure mapping from nano-workforce's state onto the office: worker names, how its
  * escalations read on the manager's phone, and how a texted reply becomes a completed user task.
  */
-import type { AgentStatus, AgentTask } from '../../shared/types.ts';
-import type { NanoCorrelation, NanoEscalation, NanoPr, NanoSupply, NanoWorker } from './client.ts';
+import type { NanoEscalation, NanoWorker } from './client.ts';
 
 /** owner/repo#123 (or an issue / PR URL) → its parts; null when it's neither. */
 export function parseRef(ref: string | undefined | null): { repo: string; number: number } | null {
@@ -11,29 +10,6 @@ export function parseRef(ref: string | undefined | null): { repo: string; number
   const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref.trim()) ?? /github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/.exec(ref);
   return m ? { repo: m[1], number: Number(m[2]) } : null;
 }
-
-/** Where a worker is and what it's on, as the office shows it. */
-export interface Seat {
-  instance: string;
-  name: string;
-  /** The model / harness family it declared (e.g. "Opus 4.8"), or ''. */
-  family: string;
-  /** The floor's repo id; null: not on any connected floor's work (it stays where it last was). */
-  repoId: string | null;
-  status: AgentStatus;
-  task: AgentTask | null;
-  issueNumber: number | null;
-  issueTitle: string | null;
-  prNumber: number | null;
-  prUrl: string | null;
-  /** The relay stream its terminal rides (job:<jobKey> while busy). */
-  stream: string | null;
-  /** What it's doing, in a few words (the BPMN step). */
-  doing: string | null;
-  live: boolean;
-}
-
-const FIX_STEPS = /pr-review|review|fix-ci|rebase|trial-merge|converge|merge/i;
 
 /**
  * A human name for a worker. Its identity is often just an address (127.0.0.1), so the instance id
@@ -44,55 +20,6 @@ export function workerName(w: NanoWorker): string {
   const last = id.split(/[/:@\s]+/).filter(Boolean).pop() ?? id;
   const m = /^(?:.*-)?([^-]+)-([0-9a-f]{6,})$/i.exec(last);
   return (m ? `${m[1]} ${m[2].slice(0, 4)}` : last).slice(0, 24);
-}
-
-/** The repo id on a connected floor for `repo`, matched case-insensitively. */
-function floorId(repo: string, repoIds: readonly string[]): string | null {
-  return repoIds.find((id) => id.toLowerCase() === repo.toLowerCase()) ?? null;
-}
-
-export function seatsFor(supply: NanoSupply, prs: readonly NanoPr[], repoIds: readonly string[]): Seat[] {
-  const corr = new Map<string, NanoCorrelation>();
-  for (const c of supply.correlations ?? []) corr.set(c.jobKey, c);
-  return supply.workers.map((w) => {
-    const job = w.jobKeys.map((k) => corr.get(k) ?? { jobKey: k, stream: `job:${k}` })[0] ?? null;
-    const seat: Seat = {
-      instance: w.instance,
-      name: workerName(w),
-      family: [w.family, w.host].filter((x) => x && x !== 'fake').join(' @ ').slice(0, 60),
-      repoId: null,
-      status: !w.live ? 'stopped' : job ? 'working' : 'idle',
-      task: null,
-      issueNumber: null,
-      issueTitle: null,
-      prNumber: null,
-      prUrl: null,
-      stream: job ? job.stream || `job:${job.jobKey}` : null,
-      doing: job ? [job.bpmnProcessId, job.elementId].filter(Boolean).join(' · ') || 'working' : null,
-      live: w.live,
-    };
-    if (!job) return seat;
-    const step = `${job.bpmnProcessId ?? ''} ${job.elementId ?? ''}`;
-    // The PR it holds a lease on, else the plan / epic its job belongs to.
-    const pr = prs.find((p) => p.activeWorker === w.instance);
-    seat.task = FIX_STEPS.test(step) || (pr && !step.trim()) ? 'fix' : 'issue';
-    if (pr && seat.doing === 'working') seat.doing = `${pr.status} · round ${pr.round}`;
-    const ref = pr ? { repo: pr.repo, number: pr.number } : parseRef(job.planKey);
-    if (ref) seat.repoId = floorId(ref.repo, repoIds);
-    if (pr) {
-      seat.prNumber = pr.number;
-      seat.prUrl = pr.url;
-      seat.issueTitle = pr.title;
-    } else if (ref) {
-      const asPr = prs.find((p) => p.repo.toLowerCase() === ref.repo.toLowerCase() && p.number === ref.number);
-      if (asPr) {
-        seat.prNumber = asPr.number;
-        seat.prUrl = asPr.url;
-        seat.issueTitle = asPr.title;
-      } else seat.issueNumber = ref.number;
-    }
-    return seat;
-  });
 }
 
 // ---------- escalations ----------

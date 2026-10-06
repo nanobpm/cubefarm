@@ -45,7 +45,15 @@ function nanoUrl(argv: string[], env: NodeJS.ProcessEnv): string | null {
   const raw = i < 0 ? env.CUBEFARM_NANO_URL : argv[i].includes('=') ? argv[i].slice('--nano='.length) : argv[i + 1];
   return raw && /^https?:\/\//.test(raw) ? raw : null;
 }
-// With --demo too: fake GitHub, real nano-workforce (or a fake one, scripts/fake-nano.mjs), for trying the office out.
+/** The Camunda engine behind the app (`--nano-engine <url>` / CUBEFARM_NANO_ENGINE_URL): the app's host on :8080 by default. */
+function engineUrl(argv: string[], env: NodeJS.ProcessEnv, app: string): string {
+  const i = argv.findIndex((a) => a === '--nano-engine' || a.startsWith('--nano-engine='));
+  const raw = i < 0 ? env.CUBEFARM_NANO_ENGINE_URL : argv[i].includes('=') ? argv[i].slice('--nano-engine='.length) : argv[i + 1];
+  if (raw && /^https?:\/\//.test(raw)) return raw;
+  const u = new URL(app);
+  return `${u.protocol}//${u.hostname}:8080`;
+}
+// Floors are nano-workforce's running processes, never GitHub repos (server/nano/backend.ts), with or without --demo.
 export const NANO_URL = nanoUrl(process.argv, process.env);
 export const NANO = NANO_URL
   ? {
@@ -53,6 +61,8 @@ export const NANO = NANO_URL
       secret: process.env.CUBEFARM_NANO_SECRET || process.env.NANO_PR_WEBHOOK_SECRET || undefined,
       pollMs: Math.max(1000, Number(process.env.CUBEFARM_NANO_POLL_MS) || 5000),
       baseBranch: process.env.CUBEFARM_NANO_BASE_BRANCH ?? '',
+      engine: engineUrl(process.argv, process.env, NANO_URL),
+      engineAuth: process.env.CUBEFARM_NANO_ENGINE_AUTH || undefined, // an Authorization header value, e.g. "Basic …"
     }
   : null;
 

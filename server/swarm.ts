@@ -57,8 +57,9 @@ import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, weatherSettings, worldEventSetti
 import { DEFAULT_THEME_SETTINGS, dueGreeting, themeSettings } from '../shared/themes.ts';
 import { CEO_ID, DEFAULT_DOG_NAME, INSTALL_STEP } from '../shared/types.ts';
 import { NanoBridge, type NanoConfig } from './nano/bridge.ts';
-import type { NanoApi } from './nano/client.ts';
-import type { ScreenLine, Seat } from './nano/mirror.ts';
+import type { EngineApi, NanoApi } from './nano/client.ts';
+import type { ScreenLine } from './nano/mirror.ts';
+import { BENCH, type Floor, type Seat } from './nano/floors.ts';
 import type {
   AgentActivity,
   AgentCli,
@@ -571,9 +572,9 @@ export class Swarm {
 
   constructor(
     private backend: Backend,
-    nano?: { api: NanoApi; config: NanoConfig },
+    nano?: { api: NanoApi; engine: EngineApi; config: NanoConfig },
   ) {
-    if (nano) this.nano = new NanoBridge(nano.api, this.nanoHost(), nano.config);
+    if (nano) this.nano = new NanoBridge(nano.api, nano.engine, this.nanoHost(), nano.config);
     this.weather = new WeatherService({
       api: backend.weather,
       file: path.join(HOME_DIR, backend.demo ? 'demo-weather.json' : 'weather.json'),
@@ -4473,10 +4474,10 @@ export class Swarm {
 
   // ---------- nano mode (server/nano/) ----------
 
-  /** What the bridge does to the office: workers at desks, their screens, the phone. */
+  /** What the bridge does to the office: floors for its processes, workers at desks, their screens, the phone. */
   private nanoHost() {
     return {
-      repoIds: () => this.state.repos.map((r) => r.id),
+      floors: (floors: Floor[]) => this.syncNanoFloors(floors),
       seat: (seat: Seat) => this.seatNano(seat),
       unseat: (instance: string) => {
         const a = this.state.agents.find((x) => x.nanoWorker === instance);
@@ -4491,15 +4492,43 @@ export class Swarm {
     };
   }
 
-  /** A nano-workforce worker at a desk: hired the first time it's seen, moved to the floor of the work it's on. */
+  /**
+   * One floor per live process instance, the bench first: new processes move in, finished ones leave (their workers
+   * go back to the bench first), and every whiteboard is refreshed from what the bridge saw.
+   */
+  private async syncNanoFloors(floors: Floor[]) {
+    const has = (id: string) => this.state.repos.some((r) => r.id.toLowerCase() === id.toLowerCase());
+    if (!has(BENCH)) await this.connectRepo(BENCH).catch((err) => console.warn(`nano: no bench: ${(err as Error).message}`));
+    for (const r of [...this.state.repos]) {
+      if (r.id === BENCH || floors.some((f) => f.id.toLowerCase() === r.id.toLowerCase())) continue;
+      for (const a of this.state.agents.filter((x) => x.repoId === r.id && x.nanoWorker)) this.moveNano(a, BENCH, null);
+      this.disconnectRepo(r.id);
+    }
+    for (const f of floors) {
+      if (!has(f.id)) await this.connectRepo(f.id).catch((err) => console.warn(`nano: floor ${f.id}: ${(err as Error).message}`));
+      const r = this.state.repos.find((x) => x.id.toLowerCase() === f.id.toLowerCase());
+      if (r && (r.description !== f.description || r.url !== (f.url || r.url))) Object.assign(r, { description: f.description, url: f.url || r.url });
+    }
+    await Promise.all(this.state.repos.map((r) => this.syncRepo(r.id)));
+  }
+
+  /** A worker walks to another floor and desk (its station, or the first free one). */
+  private moveNano(a: PersistedAgent, floorId: string, desk: number | null) {
+    const used = new Set(this.state.agents.filter((x) => x.repoId === floorId && x.role === 'dev' && x.id !== a.id).map((x) => x.desk));
+    let d = desk !== null && !used.has(desk) && desk < MAX_DESKS.dev ? desk : 0;
+    if (desk === null || used.has(desk)) while (used.has(d)) d++;
+    if (d >= MAX_DESKS.dev) return; // the floor is full: it stays where it is
+    if (a.repoId !== floorId || a.desk !== d) Object.assign(a, { repoId: floorId, desk: d });
+  }
+
+  /** A nano-workforce worker: hired the first time it's seen, then at the desk of the BPMN step whose job it holds. */
   private seatNano(seat: Seat) {
+    if (!this.state.repos.some((r) => r.id === seat.floorId)) return; // its floor isn't open yet: next time
     let a = this.state.agents.find((x) => x.nanoWorker === seat.instance);
-    const floorId = seat.repoId ?? a?.repoId ?? this.state.repos[0]?.id;
-    if (!floorId || !this.state.repos.some((r) => r.id === floorId)) return; // no floor yet: seated once one moves in
     if (!a) {
       this.nanoSeating = true;
       try {
-        const v = this.hireAgent(floorId, { name: seat.name, title: seat.family || 'nano-workforce worker' });
+        const v = this.hireAgent(seat.floorId, { name: seat.name, title: seat.family || 'nano-workforce worker' });
         a = this.agent(v.id);
       } catch (err) {
         console.warn(`nano: no desk for ${seat.name}: ${(err as Error).message}`);
@@ -4508,19 +4537,15 @@ export class Swarm {
         this.nanoSeating = false;
       }
       a.nanoWorker = seat.instance;
-    } else if (a.repoId !== floorId) {
-      const used = new Set(this.state.agents.filter((x) => x.repoId === floorId && x.role === 'dev').map((x) => x.desk));
-      let desk = 0;
-      while (used.has(desk)) desk++;
-      if (desk < MAX_DESKS.dev) Object.assign(a, { repoId: floorId, desk });
     }
+    this.moveNano(a, seat.floorId, seat.desk);
     const was = a.status;
     const busy = seat.status === 'working';
     Object.assign(a, {
       status: seat.status,
       task: seat.task,
       issueNumber: seat.issueNumber,
-      issueTitle: seat.issueTitle ?? (seat.issueNumber ? (this.repoRt.get(a.repoId)?.issues.find((i) => i.number === seat.issueNumber)?.title ?? null) : null),
+      issueTitle: seat.issueTitle,
       prNumber: seat.prNumber,
       prUrl: seat.prUrl,
       branch: null,
@@ -4529,23 +4554,18 @@ export class Swarm {
       lastError: seat.live ? null : 'worker disconnected',
     });
     const rt = this.agentRt.get(a.id);
+    const step = rt?.currentTool;
     if (rt) rt.currentTool = seat.doing;
-    if (busy && was !== 'working' && seat.doing) this.appendLog(a, [{ kind: 'system', text: `▶ ${seat.doing}${seat.prNumber ? ` · PR #${seat.prNumber}` : seat.issueNumber ? ` · #${seat.issueNumber}` : ''}` }]);
+    if (busy && seat.doing && (was !== 'working' || step !== seat.doing)) {
+      const floor = this.state.repos.find((r) => r.id === seat.floorId);
+      this.appendLog(a, [{ kind: 'system', text: `▶ ${seat.doing}${floor && floor.id !== BENCH ? ` · ${floor.fullName}` : ''}` }]);
+    }
     this.emitAgent(a);
   }
 
-  /** A sticky handed to a desk: the issue goes to nano-workforce, which plans it and fans it out over its workers. */
-  private async handToNano(a: PersistedAgent, repo: PersistedRepo, issueNumber: number) {
-    const issue = this.repoRt.get(repo.id)?.issues.find((i) => i.number === issueNumber);
-    if (!issue) throw new HttpError(404, `Issue #${issueNumber} is not open on ${repo.fullName}`);
-    try {
-      const base = await this.nano!.handOff(repo, issueNumber);
-      this.toast('success', `#${issueNumber} handed to nano-workforce (base ${base})`);
-      this.appendLog(a, [{ kind: 'system', text: `📋 Handed #${issueNumber} ${issue.title} to nano-workforce; its planner takes it from here.` }]);
-    } catch (err) {
-      throw new HttpError(502, (err as Error).message);
-    }
-    return this.agentView(a, false);
+  /** In nano mode the stickies are what nano-workforce is waiting on: they're answered, not handed out. */
+  private async handToNano(_a: PersistedAgent, repo: PersistedRepo, issueNumber: number): Promise<never> {
+    throw new HttpError(409, `${repo.fullName} #${issueNumber} is nano-workforce's: answer escalations on the phone (answer ${issueNumber} …). To start new work, text "start owner/repo#123".`);
   }
 
   /** The manager's phone in nano mode: answers to escalations, "status", or how to use it. */
@@ -4560,7 +4580,7 @@ export class Swarm {
     if (reply === null) {
       reply = /^\s*status\b/i.test(t)
         ? this.nano!.summary()
-        : 'nano-workforce runs the work here. Text `status` for what\'s in flight, `answer <id> …` to answer an escalation, or hand a whiteboard sticky to any desk to start an issue.';
+        : 'nano-workforce runs the work here: every floor is one of its running processes. Text `status` for what\'s in flight, `answer <id> …` to answer an escalation, or `start owner/repo#123` to hand it an issue.';
     }
     this.postMessage('ceo', reply);
   }

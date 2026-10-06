@@ -44,3 +44,20 @@ Try it without anything real: `node scripts/fake-nano.mjs 4398`, then
 - **macOS:** a Node from nvm/Homebrew may be refused the local network (`EHOSTUNREACH` to a LAN address that curl
   reaches) until it's allowed in System Settings → Privacy & Security → Local Network. Meanwhile an SSH tunnel works:
   `ssh -fN -L 3300:localhost:3000 merlin.local` and `--nano http://localhost:3300`.
+
+## The building: processes are floors (since the live-server run)
+
+- **Floor 1, the bench**: workers holding no job.
+- **One floor per running root process instance** (from the engine, `POST /v2/process-instances/search`):
+  `convergence-loop/<repo>-pr<n>` for a PR's convergence loop, `delivery-graph/<hash>`, … The floor's description
+  is the PR's status and round (or the escalation's subject), prefixed with `⚠️ incident` when the engine has one.
+  Floors open as processes start and close when they finish (their workers go back to the bench first).
+- **Desks are the process's agent steps**: service tasks whose job type is `pool:capability` (e.g.
+  `senior:pr-review`), in BPMN order. A worker sits at the desk of the step whose job it holds (engine
+  `/v2/jobs/search`, state CREATED, by `worker`); call activities count on their root's floor.
+- **Whiteboard**: the floor's PR, its escalations (🚨), user tasks (🙋), events and timers it waits on (⏳), and
+  agent steps no worker has picked up yet (🕒).
+- **Phone**: `status`, `answer <id> …`, and `start owner/repo#123 [on <base>]` to hand nano-workforce an issue.
+  Stickies can't be handed out: in this mode they're what nano-workforce is waiting on.
+- The engine is the app's host on :8080 unless `--nano-engine <url>` / `CUBEFARM_NANO_ENGINE_URL` says otherwise
+  (`CUBEFARM_NANO_ENGINE_AUTH`: an Authorization header value). GitHub isn't used at all in this mode.
