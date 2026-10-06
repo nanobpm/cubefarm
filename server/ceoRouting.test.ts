@@ -131,4 +131,19 @@ describe('agent_detail reports the CEO harness, not always Claude', () => {
     ceo.model = 'github-copilot/kimi-k3';
     expect(detail().model).toBe('github-copilot/kimi-k3');
   });
+
+  // Regression (adversarial review): the harness-aware effort rewrite dropped the dev/QA fallback — a non-CEO
+  // agent with no explicit effort (the common case; hireAgent stores '') read '' instead of defaultEffort.
+  it('still reports the office default effort for a dev with none set', async () => {
+    const swarm = new Swarm(createDemoBackend());
+    const repo = await swarm.connectRepo('demo-co/pixel-todo');
+    const priv = swarm as unknown as {
+      state: { settings: { defaultEffort: string } };
+      agentDetail(x: { agent_id: string }): string;
+    };
+    priv.state.settings.defaultEffort = 'high';
+    const dev = swarm.hireAgent(repo.id, {});
+    const d = JSON.parse(priv.agentDetail({ agent_id: dev.id })) as { effort: string };
+    expect(d.effort).toBe('high');
+  });
 });

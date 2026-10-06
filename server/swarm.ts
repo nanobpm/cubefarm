@@ -4996,9 +4996,10 @@ export class Swarm {
         pullRequest: a.prNumber ? { number: a.prNumber, url: a.prUrl } : null,
         codingAgent: ceo ? this.state.settings.ceoHarness : a.cli || this.state.settings.defaultCli,
         // An ACP CEO's empty model means the harness's own default; Claude's name would be wrong for it. Effort is
-        // likewise Claude-only: ACP sessions ignore it (acpArgs passes no effort), so report the stored value.
+        // likewise Claude-only for the CEO: ACP sessions ignore it (acpArgs passes no effort), so report the stored
+        // value. A dev/QA agent's empty effort still means the office default, as sessions start with it.
         model: ceo ? a.model || (this.state.settings.ceoHarness === 'claude' ? CEO_MODEL : 'the harness default') : this.modelFor(a, a.cli || this.state.settings.defaultCli) || 'the coding agent default',
-        effort: a.effort || (ceo && this.state.settings.ceoHarness === 'claude' ? CEO_EFFORT : ''),
+        effort: a.effort || (ceo ? (this.state.settings.ceoHarness === 'claude' ? CEO_EFFORT : '') : this.state.settings.defaultEffort),
         hiredBy: a.hiredBy,
         jobDescription: a.brief || null,
       },
