@@ -45,15 +45,20 @@ const OPTS = { cwd: os.tmpdir(), prompt: 'Review the queue.', systemAppend: 'You
 /**
  * A `nano-coder` stub on PATH (a dir holding only it), restoring PATH on `close()`. The fake's behaviour is a plain
  * JavaScript file the shim runs with node — identical on every platform, with none of the quoting a `node -e` one-liner
- * would need through a shell. `close()` (not `using`) because the child may outlive the test body by a moment.
+ * would need through a shell. The Windows stub is an npm-style `.cmd` shim (a `%dp0%` target line) so `programFor()`
+ * unwraps it to node on the script: a plain `.cmd` spawned without a shell is not executable, which is exactly the
+ * Windows CI failure this guards. `close()` (not `using`) because the child may outlive the test body by a moment.
  */
 function stubHarness(script: string): { dir: string; close(): void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cubefarm-acp-stub-'));
   const fake = path.join(dir, 'fake-acp.cjs');
   fs.writeFileSync(fake, script);
-  const file = path.join(dir, process.platform === 'win32' ? 'nano-coder.cmd' : 'nano-coder');
-  const run = `${JSON.stringify(process.execPath)} ${JSON.stringify(fake)}`;
-  fs.writeFileSync(file, process.platform === 'win32' ? `@echo off\r\n${run} %*\r\n` : `#!/bin/sh\nexec ${run} "$@"\n`, { mode: 0o755 });
+  const win32 = process.platform === 'win32';
+  const file = path.join(dir, win32 ? 'nano-coder.cmd' : 'nano-coder');
+  // The npm-shim shape `unwrapCmdShim()` recognises: a `...%dp0%\<target>... %*` line naming a .cjs/.exe under the dir.
+  const shim = `@echo off\r\n"${process.execPath}" "%dp0%\\fake-acp.cjs" %*\r\n`;
+  const sh = `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fake)} "$@"\n`;
+  fs.writeFileSync(file, win32 ? shim : sh, { mode: 0o755 });
   const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
   const saved = process.env[key];
   process.env[key] = dir + path.delimiter + (saved ?? '');
@@ -286,6 +291,43 @@ process.stdin.on('end', () => process.exit(0));
       expect(r.ok).toBe(false);
       expect(Date.now() - t0).toBeLessThan(ACP_STARTUP_TIMEOUT_MS);
       expect(r.errors.join(' ')).toMatch(/not accepting input|exited/);
+    } finally {
+      handle.stop();
+      stub.close();
+    }
+  }, 30_000);
+
+  it('fails a pending request when the harness closes its input but stays alive (EPIPE)', async () => {
+    // Regression (Copilot review): Writable.write() reports a closed pipe through the async 'error'/'close' events, not
+    // by throwing, so the synchronous write() check never fires for a harness that shut its stdin but keeps running.
+    // One in-flight write can still land in the kernel buffer (no event), but the next write raises EPIPE — and unless
+    // the pending requests are failed on that signal, the unbounded session/prompt hangs and the CEO stays "working"
+    // forever. This fake answers initialize/session/new, then on the first prompt closes its input (fd 0) and asks
+    // permission: the office's permission reply is the second write that trips EPIPE while the prompt is still pending.
+    const stub = stubHarness(`const fs=require('node:fs');let buf='';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data',(d)=>{
+  buf+=d;let i;
+  while((i=buf.indexOf('\\n'))>=0){
+    const m=JSON.parse(buf.slice(0,i));buf=buf.slice(i+1);
+    if(m.method==='initialize')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentCapabilities:{}}})+'\\n');
+    else if(m.method==='session/new')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:'s'}})+'\\n');
+    else if(m.method==='session/prompt'){
+      try{fs.closeSync(0);}catch(e){}
+      process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:900,method:'session/request_permission',params:{sessionId:m.params.sessionId,options:[{optionId:'yes',kind:'allow_once'}]}})+'\\n');
+    }
+  }
+});
+setInterval(()=>undefined,1000);
+`);
+    const s = recordSession();
+    const t0 = Date.now();
+    const handle = startAcpSession('nano-coder', OPTS, s.cb);
+    try {
+      const r = await s.result;
+      expect(r.ok).toBe(false);
+      expect(Date.now() - t0).toBeLessThan(ACP_STARTUP_TIMEOUT_MS);
+      expect(r.errors.join(' ')).toMatch(/not accepting input/);
     } finally {
       handle.stop();
       stub.close();

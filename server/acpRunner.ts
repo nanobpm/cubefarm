@@ -160,7 +160,17 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
   };
 
   let buf = '';
-  proc.stdin.on('error', () => undefined); // it exited: 'exit' reports it
+  // A dead pipe (EPIPE) surfaces asynchronously on 'error', then 'close' — never from write() — when the child closed
+  // its input but stays alive, so 'exit' never comes. An in-flight write can still land in the kernel buffer (no
+  // 'error'), but the child is gone and will never answer, so 'close' is the reliable signal. session/prompt has no
+  // timeout, so fail the pending requests on either or the CEO hangs "working" forever.
+  const failPendingOnDeadInput = () => {
+    if (finished || !pending.size) return;
+    for (const p of pending.values()) p.fail(new Error(`${harness} is not accepting input (stdin closed)`));
+    pending.clear();
+  };
+  proc.stdin.on('error', failPendingOnDeadInput);
+  proc.stdin.on('close', failPendingOnDeadInput);
   proc.stdout.setEncoding('utf8');
   proc.stdout.on('data', (d: string) => {
     buf += d;

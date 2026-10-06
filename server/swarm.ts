@@ -3905,7 +3905,9 @@ export class Swarm {
         model,
         effort: a.effort || CEO_EFFORT,
         browserTesting: false,
-        additionalDirectories: this.state.repos.filter((r) => this.repoRt.get(r.id)?.cloneStatus === 'ready').map((r) => this.backend.mainDir(r.fullName)),
+        // Nano mode clones nothing (its backend's mainDir is a /demo/... stand-in and ensureClone is a no-op), so
+        // there are no reference clones to hand the harness — advertising them would name roots that don't exist.
+        additionalDirectories: this.nano ? [] : this.state.repos.filter((r) => this.repoRt.get(r.id)?.cloneStatus === 'ready').map((r) => this.backend.mainDir(r.fullName)),
         role: 'ceo',
         office: this.officeTools(),
         ...(this.nano && harness !== 'claude' ? { sessionEnv: this.nanoEnv } : {}),

@@ -278,12 +278,16 @@ describe('the CEO on another harness', () => {
     expect(ceoSystemPrompt(base)).not.toContain('nano-workforce');
   });
 
-  it('permits nano-workforce mutations when the skill is present, but keeps clones read-only', () => {
+  it('permits nano-workforce mutations when the skill is present, and drops the clone-reading instruction', () => {
     const shellTools = { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' };
     const nano = ceoSystemPrompt({ ...base, shellTools, nanoSkill: '# skill\n' });
     // The blanket "no commands that change anything" rule must not forbid the nano-workforce skill the prompt then hands over.
     expect(nano).not.toContain('run no other commands that change anything');
-    expect(nano).toContain('never edit their files');
+    // Nano mode clones nothing (the floors are nano-workforce processes), so the prompt must not send the CEO reading
+    // clones that don't exist — it says so instead of pointing at read-only reference clones.
+    expect(nano).toContain('Nano mode keeps no repository clones');
+    expect(nano).not.toContain('never edit their files');
+    expect(nano).not.toContain('Read the repositories through their clone paths');
     expect(nano).toContain('nano-workforce commands in the skill below');
     expect(nano).toContain('Change things only through the office tools and the nano-workforce skill below.');
     // Without the skill the strict read-only restriction stays.
