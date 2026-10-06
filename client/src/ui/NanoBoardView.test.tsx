@@ -49,8 +49,15 @@ describe('the nano board screen-reader summary', () => {
     const html = summary([shape({ incident: true, workers: ['Ada'], active: 2, done: 3 })]);
     expect(html).toContain('incident');
     expect(html).toContain('worker: Ada');
-    expect(html).toContain('active');
+    // The canvas chips `● 2` for two active tokens; the summary must announce the count too (Copilot review).
+    expect(html).toContain('active ×2');
     expect(html).toContain('done ×3');
+  });
+
+  it('says plain active for a single token', () => {
+    const html = summary([shape({ active: 1 })]);
+    expect(html).toContain('active');
+    expect(html).not.toContain('active ×');
   });
 
   it('announces a waiting reason together with the worker holding the step', () => {

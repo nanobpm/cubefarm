@@ -23,7 +23,8 @@ function shapeState(s: NanoShape): string {
       parts.push('waiting for an event or timer');
       break;
   }
-  if (s.active) parts.push('active');
+  // The canvas chips `● N` when several tokens sit on one shape; announce the count too, like `done ×N`.
+  if (s.active) parts.push(s.active > 1 ? `active ×${s.active}` : 'active');
   if (s.done) parts.push(`done ×${s.done}`);
   return parts.length ? parts.join('; ') : 'not reached';
 }

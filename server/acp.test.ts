@@ -90,6 +90,14 @@ describe('acp', () => {
   it('ends the session without spawning the harness when the office command cannot be written', async () => {
     // Regression (Copilot review): a failed helper write used to only log, then spawn a CEO whose mandatory first
     // company_status call was guaranteed to fail (or hit a stale helper). A file where bin/ belongs makes mkdir fail.
+    // startAcpSession checks for the CLI before writing the helper, so stub the harness on PATH: the test must reach
+    // the write failure whether or not the host really has nano-coder installed.
+    const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cubefarm-nano-stub-'));
+    const stub = path.join(stubDir, process.platform === 'win32' ? 'nano-coder.cmd' : 'nano-coder');
+    fs.writeFileSync(stub, process.platform === 'win32' ? '@echo off\r\nexit 0\r\n' : '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+    const savedPath = process.env[pathKey];
+    process.env[pathKey] = stubDir + path.delimiter + (savedPath ?? '');
     const blocker = path.join(HOME_DIR, 'bin');
     fs.mkdirSync(HOME_DIR, { recursive: true });
     fs.writeFileSync(blocker, 'x');
@@ -111,7 +119,10 @@ describe('acp', () => {
       expect(r.ok).toBe(false);
       expect(r.errors.join(' ')).toContain("Couldn't write the office command");
     } finally {
+      if (savedPath === undefined) delete process.env[pathKey];
+      else process.env[pathKey] = savedPath;
       fs.rmSync(blocker, { force: true, maxRetries: 3 });
+      fs.rmSync(stubDir, { recursive: true, force: true, maxRetries: 3 });
     }
   });
 });
