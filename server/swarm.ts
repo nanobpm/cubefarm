@@ -3870,11 +3870,12 @@ export class Swarm {
     this.emitAgent(a);
     this.emitCeo();
     this.save();
-    await fs.mkdir(CEO_DIR, { recursive: true }).catch(() => undefined);
-    // Capture the harness and model when the job is accepted, so a setting change during the awaits below
-    // (which resets a.model and the prompt mode via updateSettings) can't misroute or misconfigure this session.
+    // Capture the harness and model when the job is accepted, before any await: a setting change landing while
+    // one is pending (which resets a.model and the prompt mode via updateSettings) must not misroute or
+    // misconfigure this session — it belongs to the harness that accepted it.
     const harness = this.state.settings.ceoHarness;
     const model = harness === 'claude' ? a.model || CEO_MODEL : a.model;
+    await fs.mkdir(CEO_DIR, { recursive: true }).catch(() => undefined);
     const triage = job.kind === 'triage' ? await this.triagePr(job) : null;
     const nanoSkill = await this.ceoNanoSkill(a);
     if (a.status !== 'working') {

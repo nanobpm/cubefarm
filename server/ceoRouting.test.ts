@@ -172,3 +172,33 @@ describe('ceoResumeDecision drops a stale session id when the harness changes', 
     expect(ceoResumeDecision('chat', 'claude', 'claude', null)).toEqual({ resume: undefined, clearStored: false });
   });
 });
+
+// Regression (Copilot review 5434988423): runCeoJob used to read the harness (and model) only after awaiting
+// fs.mkdir, so a "Runs on" change landing in that window launched the job on the newly selected harness rather
+// than the one that accepted it. The capture must happen before the first await, so the session belongs to the
+// accepting harness no matter when the setting flips.
+describe('runCeoJob captures the harness before any await', () => {
+  it('launches on the harness that accepted the job even when the setting flips mid-startup', async () => {
+    const swarm = new Swarm(createDemoBackend());
+    (swarm as unknown as { ensureCeo(i: unknown[]): void }).ensureCeo([]);
+    const priv = swarm as unknown as {
+      state: { agents: { id: string; role: string; model: string }[]; settings: { ceoHarness: string } };
+      backend: { startSession(o: unknown, c: unknown): unknown };
+      runCeoJob(a: unknown, job: unknown): Promise<void>;
+    };
+    const ceo = priv.state.agents.find((a) => a.role === 'ceo')!;
+    ceo.model = ''; // fall back to the harness default so the launched model reveals the captured harness
+    let launched: { model?: string } | undefined;
+    const orig = priv.backend.startSession.bind(priv.backend);
+    priv.backend.startSession = (o: unknown, c: unknown) => {
+      launched = o as { model?: string };
+      return orig(o, c);
+    };
+    priv.state.settings.ceoHarness = 'claude'; // the harness that accepts the job
+    const p = priv.runCeoJob(ceo, { kind: 'chat', text: 'hi', at: Date.now() });
+    priv.state.settings.ceoHarness = 'copilot'; // the manager switches "Runs on" while startup is awaiting
+    await p;
+    // Claude's default model, not the ACP pass-through (''), proves the pre-await capture won the race.
+    expect(launched?.model).toBe('claude-opus-5-5');
+  });
+});
