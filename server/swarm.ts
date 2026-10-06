@@ -457,6 +457,23 @@ const ICON = { pass: '✅', fail: '❌', skip: '⏭️' } as const;
 
 export { HttpError };
 
+/**
+ * The CEO session-resume decision when a job starts. A chat resumes the last session only when the same harness
+ * still owns it; when ownership changes (the manager switched "Runs on"), the old harness's resumable id is stale
+ * and must be dropped (`clearStored`) before the new session starts — otherwise a new session that fails before
+ * its sessionId callback would leave that foreign id persisted under the new harness, and the next chat would send
+ * it to the wrong session/load.
+ */
+export function ceoResumeDecision(
+  jobKind: CeoJob['kind'],
+  ownedBy: CeoHarness,
+  harness: CeoHarness,
+  sessionId: string | null,
+): { resume: string | undefined; clearStored: boolean } {
+  const same = ownedBy === harness;
+  return { resume: jobKind === 'chat' && same ? (sessionId ?? undefined) : undefined, clearStored: !same };
+}
+
 export class Swarm {
   private state: Persisted = {
     settings: {
@@ -3868,8 +3885,16 @@ export class Swarm {
       return;
     }
     // A chat carries on from the CEO's last session, so "why did you propose that?" has an answer.
-    const resume = job.kind === 'chat' && (this.state.ceo.sessionHarness ?? 'claude') === harness ? (a.sessionId ?? undefined) : undefined;
+    const ownedBy = this.state.ceo.sessionHarness ?? 'claude';
+    const { resume, clearStored } = ceoResumeDecision(job.kind, ownedBy, harness, a.sessionId);
     const how = harness === 'claude' ? this.sessionRuntime(a, resume) : { acp: harness, resumeSessionId: resume };
+    if (clearStored) {
+      // Ownership changes: drop the old harness's resumable id now. If the new session fails before its
+      // sessionId callback, leaving it would persist a foreign id under the new harness (onCeoFinished saves
+      // sessionHarness + sessionId together), and the next chat would send it to the wrong session/load.
+      a.sessionId = null;
+      a.sessionCli = null;
+    }
     this.state.ceo.sessionHarness = harness; // the harness that owns this session; the terminal flag follows it, not the setting
     rt.session = this.backend.startSession(
       {

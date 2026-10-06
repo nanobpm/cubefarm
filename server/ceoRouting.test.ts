@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createDemoBackend } from './demo.ts';
-import { Swarm } from './swarm.ts';
+import { ceoResumeDecision, Swarm } from './swarm.ts';
 
 // Regression (Copilot review): free-text phone routing (nanoCeo) must follow the harness that owns the
 // live CEO session, not the mutable "Runs on" setting. Switching the setting mid-session must not divert a
@@ -145,5 +145,30 @@ describe('agent_detail reports the CEO harness, not always Claude', () => {
     const dev = swarm.hireAgent(repo.id, {});
     const d = JSON.parse(priv.agentDetail({ agent_id: dev.id })) as { effort: string };
     expect(d.effort).toBe('high');
+  });
+});
+
+// Regression (Copilot review 5434797552): when "Runs on" changes harness, the old harness's resumable session id
+// is stale. Leaving it on the agent while sessionHarness is reassigned meant a new session that failed before its
+// sessionId callback persisted that foreign id under the new harness, and the next chat sent it to the wrong
+// session/load. ceoResumeDecision must clear the stored id (and never resume) across an ownership change.
+describe('ceoResumeDecision drops a stale session id when the harness changes', () => {
+  it('resumes only when the same harness still owns the session', () => {
+    expect(ceoResumeDecision('chat', 'copilot', 'copilot', 'sess-1')).toEqual({ resume: 'sess-1', clearStored: false });
+  });
+
+  it('clears the stored id and does not resume when the harness changes', () => {
+    // The cited bug: copilot -> claude (or any switch) must drop the foreign id so a failed startup can't
+    // persist it under the new harness.
+    expect(ceoResumeDecision('chat', 'copilot', 'claude', 'sess-1')).toEqual({ resume: undefined, clearStored: true });
+    expect(ceoResumeDecision('chat', 'claude', 'nano-coder', 'sess-1')).toEqual({ resume: undefined, clearStored: true });
+  });
+
+  it('never resumes a non-chat job, even on the same harness', () => {
+    expect(ceoResumeDecision('review', 'claude', 'claude', 'sess-1')).toEqual({ resume: undefined, clearStored: false });
+  });
+
+  it('resumes nothing and clears nothing when there is no stored id', () => {
+    expect(ceoResumeDecision('chat', 'claude', 'claude', null)).toEqual({ resume: undefined, clearStored: false });
   });
 });
