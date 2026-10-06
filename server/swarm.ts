@@ -969,6 +969,9 @@ export class Swarm {
 
   private agentView(a: PersistedAgent, withLog: boolean): AgentView {
     const rt = this.agentRt.get(a.id)!;
+    // While a CEO session is live, terminal visibility follows the harness that owns the session, not the
+    // mutable "Runs on" setting: switching it mid-session must not hide a running terminal or reveal a stale one.
+    const ceoHarness = a.role === 'ceo' && rt.session ? (this.state.ceo.sessionHarness ?? 'claude') : this.state.settings.ceoHarness;
     return {
       id: a.id,
       name: a.name,
@@ -988,7 +991,7 @@ export class Swarm {
       model: a.model,
       effort: a.effort,
       cli: a.cli,
-      terminal: !!rt.terminal && !(a.role === 'ceo' && this.state.settings.ceoHarness !== 'claude'), // an ACP CEO's steps are its log
+      terminal: !!rt.terminal && !(a.role === 'ceo' && ceoHarness !== 'claude'), // an ACP CEO's steps are its log
       status: a.status,
       issueNumber: a.issueNumber,
       issueTitle: a.issueTitle,
@@ -3846,6 +3849,7 @@ export class Swarm {
     const harness = this.state.settings.ceoHarness;
     const resume = job.kind === 'chat' && (this.state.ceo.sessionHarness ?? 'claude') === harness ? (a.sessionId ?? undefined) : undefined;
     const how = harness === 'claude' ? this.sessionRuntime(a, resume) : { acp: harness, resumeSessionId: resume };
+    this.state.ceo.sessionHarness = harness; // the harness that owns this session; the terminal flag follows it, not the setting
     rt.session = this.backend.startSession(
       {
         cwd: CEO_DIR,
@@ -3870,7 +3874,6 @@ export class Swarm {
         sessionId: (id) => {
           a.sessionId = id;
           a.sessionCli = id && harness === 'claude' ? 'claude' : null;
-          this.state.ceo.sessionHarness = harness;
         },
         browserUrl: () => undefined,
         screenshot: () => undefined,
