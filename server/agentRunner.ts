@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { query, type CanUseTool, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentCli, AgentRole, EffortLevel, LogKind } from '../shared/types.ts';
+import type { AgentCli, AgentRole, CeoHarness, EffortLevel, LogKind } from '../shared/types.ts';
 import type { OfficeTools } from './ceo.ts';
 import type { UsageWarning } from './pacing.ts';
 import type { AgentTerminal } from './terminal.ts';
@@ -26,6 +26,8 @@ export interface SessionOptions {
   resumeSessionId?: string;
   /** The CEO's in-process MCP server (mcp__office__*). */
   office?: OfficeTools;
+  /** The CEO on a harness spoken to over ACP (acpRunner.ts) instead of Claude Code. */
+  acp?: Exclude<CeoHarness, 'claude'>;
   /** The terminal runtime: the agent's terminal and the CLI to run in it. Without one: an Agent SDK session. */
   terminal?: AgentTerminal;
   cli?: AgentCli;

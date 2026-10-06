@@ -10,6 +10,7 @@ import { DAY_PARTS } from '../shared/speech.ts';
 import { DEMO, DEMO_SCALE, NANO, PORT, STATE_FILE, VERSION, WORKSPACE_ROOT } from './config.ts';
 import { realBackend } from './backend.ts';
 import { handleHook, handleMcp, setOfficeUrl } from './cliRunner.ts';
+import { handleOfficeCall } from './acpRunner.ts';
 import { createDemoBackend } from './demo.ts';
 import { parseRange } from './journal.ts';
 import { underLauncher } from './officeUpdate.ts';
@@ -24,10 +25,10 @@ import { createNanoBackend, FloorBook } from './nano/backend.ts';
 // In nano mode the floors are nano-workforce's running processes: the bridge keeps the book, the backend serves it.
 const floorBook = new FloorBook();
 const swarm = new Swarm(
-  NANO ? createNanoBackend(floorBook, NANO.url) : DEMO ? createDemoBackend(DEMO_SCALE) : realBackend,
+  NANO ? createNanoBackend(floorBook, NANO.url, { demo: DEMO }) : DEMO ? createDemoBackend(DEMO_SCALE) : realBackend,
   NANO
     ? {
-        api: nanoClient(NANO.url, { secret: NANO.secret }),
+        api: nanoClient(NANO.url, { secret: NANO.secret, auth: NANO.auth }),
         engine: engineClient(NANO.engine, { auth: NANO.engineAuth }),
         config: { url: NANO.url, pollMs: NANO.pollMs, baseBranch: NANO.baseBranch, book: floorBook },
       }
@@ -44,6 +45,11 @@ const app = express();
 // Agent CLIs calling back: hooks (a tool result can be a large screenshot, hence the limit) and the CEO's office tools.
 // The token in the path is the session's; unknown tokens get an empty answer.
 app.post('/api/hooks/:token', express.json({ limit: '64mb' }), (req, res) => void res.json(handleHook(String(req.params.token), req.body)));
+app.post('/api/office/:token/:tool', express.json({ limit: '4mb' }), (req, res, next) =>
+  void handleOfficeCall(String(req.params.token), String(req.params.tool), req.body)
+    .then((r) => res.status(r.error ? 400 : 200).json(r))
+    .catch(next),
+);
 app.post('/api/mcp/:token', express.json({ limit: '4mb' }), (req, res, next) => void handleMcp(String(req.params.token), req, res).catch(next));
 app.all('/api/mcp/:token', (_req, res) => void res.status(405).set('Allow', 'POST').end());
 app.use(express.json({ limit: '1mb' }));

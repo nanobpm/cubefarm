@@ -195,6 +195,14 @@ export class NanoBridge {
     return branch;
   }
 
+  /** nano-workforce's agent skill for the CEO, fetched again after ten minutes (it follows the app's version). */
+  async agentSkill(): Promise<string> {
+    if (this.skill && Date.now() - this.skill.at < 10 * 60_000) return this.skill.text;
+    this.skill = { text: await this.api.agentSkill(), at: Date.now() };
+    return this.skill.text;
+  }
+  private skill: { text: string; at: number } | null = null;
+
   /** A text from the manager: an answer to an escalation (the reply to send back), or null when it isn't one. */
   async answer(text: string): Promise<string | null> {
     const start = /^\s*start\s+(\S+)(?:\s+(?:on\s+)?(\S+))?\s*$/i.exec(text);

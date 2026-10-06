@@ -6,6 +6,7 @@ import type { Backend } from './backend.ts';
 import type { LogEntry, SessionHandle, SessionResult } from './agentRunner.ts';
 import type { PrDetails } from './github.ts';
 import { defaultProjectsDir, DESK_SWEEP_INTERVAL_MS, HOME_DIR, LOG_BUFFER, SCHEDULER_INTERVAL_MS, STATE_FILE, SYNC_INTERVAL_MS, VERSION, WORKSPACE_ROOT } from './config.ts';
+import { officeCommand } from './acpRunner.ts';
 import { ceoJobPrompt, ceoSystemPrompt, checkCloseIssue, checkPendingLimit, createOfficeTools, FLOOR_DESKS, floorCapacity, IssueCap, jobLabel, MAX_PENDING_PROPOSALS, planRoute, seatCount, specialtyLabel, specialtySlug, type CeoJob, type OfficeTools } from './ceo.ts';
 import { afterClose, ASK_AGAIN_MS, closedWhy, closuresHeld, forgettable, issueOpen, nameList, pullNow, stillOpen, stoppedMessage, toAsk, toHold, type Closure, type FloorState, type KnownPull, type LearnedPull } from './closeCleanup.ts';
 import { depsPromptLine, type DepsOutcome } from './deps.ts';
@@ -55,7 +56,7 @@ import { parsePongResult, PONG_PLAYER, recordGame } from '../shared/pong.ts';
 import { effectiveModel } from '../shared/models.ts';
 import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, weatherSettings, worldEventSettings } from '../shared/outside.ts';
 import { DEFAULT_THEME_SETTINGS, dueGreeting, themeSettings } from '../shared/themes.ts';
-import { CEO_ID, DEFAULT_DOG_NAME, INSTALL_STEP } from '../shared/types.ts';
+import { CEO_HARNESSES, CEO_ID, DEFAULT_DOG_NAME, INSTALL_STEP } from '../shared/types.ts';
 import { NanoBridge, type NanoConfig } from './nano/bridge.ts';
 import type { EngineApi, NanoApi } from './nano/client.ts';
 import type { ScreenLine } from './nano/mirror.ts';
@@ -69,6 +70,7 @@ import type {
   AgentStatus,
   AgentTask,
   AgentView,
+  CeoHarness,
   CeoInfo,
   CliView,
   ClientEvent,
@@ -194,6 +196,7 @@ interface CeoState {
   job: CeoJob | null; // the job the CEO is on right now
   lastReviewAt: number | null;
   lastFingerprint: string | null; // company state at the last review; unchanged means the next review is skipped
+  sessionHarness?: CeoHarness; // the harness the CEO's sessionId belongs to (absent: Claude Code)
 }
 
 /** An open issue whose PR was closed: auto-assign leaves it for the manager (closeCleanup.ts toHold). */
@@ -465,6 +468,7 @@ export class Swarm {
       hiring: 'approve',
       teamCap: 6,
       ceoHeartbeatMin: 60,
+      ceoHarness: 'claude',
       managerName: '',
       companyName: '',
       dogName: DEFAULT_DOG_NAME,
@@ -686,6 +690,7 @@ export class Swarm {
       if (!EFFORTS.includes(this.state.settings.defaultEffort)) this.state.settings.defaultEffort = 'medium';
       if (this.state.settings.runtime !== 'sdk') this.state.settings.runtime = 'terminal';
       if (!isCli(this.state.settings.defaultCli)) this.state.settings.defaultCli = 'claude';
+      if (!CEO_HARNESSES.some((h) => h.id === this.state.settings.ceoHarness)) this.state.settings.ceoHarness = 'claude';
       this.state.settings.trimIdleDesksMin = clampTrimIdleMin(this.state.settings.trimIdleDesksMin);
       if (!this.state.settings.defaultModel && this.state.settings.defaultCli === 'claude') this.state.settings.defaultModel = DEFAULT_MODEL;
       // "Max concurrent sessions" (default 4) became an optional session limit. The old default goes; a limit the manager chose stays.
@@ -979,7 +984,7 @@ export class Swarm {
       model: a.model,
       effort: a.effort,
       cli: a.cli,
-      terminal: !!rt.terminal,
+      terminal: !!rt.terminal && !(a.role === 'ceo' && this.state.settings.ceoHarness !== 'claude'), // an ACP CEO's steps are its log
       status: a.status,
       issueNumber: a.issueNumber,
       issueTitle: a.issueTitle,
@@ -3147,6 +3152,13 @@ export class Swarm {
     if (patch.runtime === 'terminal' || patch.runtime === 'sdk') s.runtime = patch.runtime;
     if (patch.hiring === 'approve' || patch.hiring === 'auto') s.hiring = patch.hiring;
     if (patch.teamCap !== undefined) s.teamCap = Math.max(1, Math.min(15, Math.round(Number(patch.teamCap)) || 1));
+    if (patch.ceoHarness !== undefined && patch.ceoHarness !== s.ceoHarness && CEO_HARNESSES.some((h) => h.id === patch.ceoHarness)) {
+      s.ceoHarness = patch.ceoHarness;
+      // Its model belongs to the harness: Claude's names mean nothing to the others, which start on their own default.
+      const ceo = this.ceo();
+      ceo.model = s.ceoHarness === 'claude' ? CEO_MODEL : '';
+      this.emitAgent(ceo);
+    }
     if (patch.ceoHeartbeatMin !== undefined) s.ceoHeartbeatMin = Math.max(0, Math.min(1440, Math.round(Number(patch.ceoHeartbeatMin)) || 0));
     if (typeof patch.managerName === 'string') s.managerName = patch.managerName.trim().slice(0, 40);
     if (typeof patch.companyName === 'string') s.companyName = patch.companyName.trim().slice(0, 60);
@@ -3480,7 +3492,8 @@ export class Swarm {
    */
   private schedule() {
     if (this.nano) {
-      this.progressTick(); // nano-workforce does the work: nothing to start here
+      this.progressTick(); // nano-workforce does the work: nothing to start here but the CEO's replies
+      this.startCeoWork();
       return;
     }
     this.tickUsage();
@@ -3726,7 +3739,7 @@ export class Swarm {
 
   /** Queue a job for the CEO: one onboarding or plan per floor, one review, and chat messages merge into one reply. */
   private enqueueCeo(job: CeoJob) {
-    if (this.nano) return; // no CEO sessions in nano mode: nano-workforce plans the work
+    if (this.nano && (job.kind !== 'chat' || !this.nanoCeo())) return; // nano-workforce plans the work; an ACP CEO answers the manager
     const q = this.state.ceo.queue;
     if (job.kind === 'plan' && q.some((j) => j.kind === 'onboard' && j.repoId === job.repoId)) return; // onboarding plans from the brief too
     const same = q.findIndex((j) => j.kind === job.kind && (job.kind === 'review' || job.kind === 'chat' || (j.repoId === job.repoId && j.prNumber === job.prNumber)));
@@ -3770,9 +3783,30 @@ export class Swarm {
     void this.runCeoJob(a, job);
   }
 
-  private ceoPromptInput(a: PersistedAgent): Parameters<typeof ceoSystemPrompt>[0] {
+  private ceoPromptInput(a: PersistedAgent, nanoSkill?: string): Parameters<typeof ceoSystemPrompt>[0] {
     const s = this.state.settings;
-    return { name: a.name, company: s.companyName, manager: s.managerName, notesFile: path.join(CEO_DIR, 'NOTES.md'), sessionLimit: s.sessionLimit, teamCap: s.teamCap, hiring: s.hiring };
+    return {
+      name: a.name,
+      company: s.companyName,
+      manager: s.managerName,
+      notesFile: path.join(CEO_DIR, 'NOTES.md'),
+      sessionLimit: s.sessionLimit,
+      teamCap: s.teamCap,
+      hiring: s.hiring,
+      ...(s.ceoHarness !== 'claude' ? { shellTools: { command: officeCommand(), catalog: this.officeTools().catalog() } } : {}),
+      ...(nanoSkill ? { nanoSkill } : {}),
+    };
+  }
+
+  /** nano-workforce's agent skill for the CEO's instructions (--nano); null when it can't be had right now. */
+  private async ceoNanoSkill(a: PersistedAgent): Promise<string | undefined> {
+    if (!this.nano) return undefined;
+    try {
+      return await this.nano.agentSkill();
+    } catch (err) {
+      this.appendLog(a, [{ kind: 'error', text: `Couldn't fetch nano-workforce's agent skill: ${oneLine(err)}` }]);
+      return undefined;
+    }
   }
 
   private async runCeoJob(a: PersistedAgent, job: CeoJob) {
@@ -3796,6 +3830,7 @@ export class Swarm {
     this.save();
     await fs.mkdir(CEO_DIR, { recursive: true }).catch(() => undefined);
     const triage = job.kind === 'triage' ? await this.triagePr(job) : null;
+    const nanoSkill = await this.ceoNanoSkill(a);
     if (a.status !== 'working') {
       // stopped before the session started
       this.state.ceo.job = null;
@@ -3804,13 +3839,15 @@ export class Swarm {
       return;
     }
     // A chat carries on from the CEO's last session, so "why did you propose that?" has an answer.
-    const how = this.sessionRuntime(a, job.kind === 'chat' ? (a.sessionId ?? undefined) : undefined);
+    const harness = this.state.settings.ceoHarness;
+    const resume = job.kind === 'chat' && (this.state.ceo.sessionHarness ?? 'claude') === harness ? (a.sessionId ?? undefined) : undefined;
+    const how = harness === 'claude' ? this.sessionRuntime(a, resume) : { acp: harness, resumeSessionId: resume };
     rt.session = this.backend.startSession(
       {
         cwd: CEO_DIR,
         prompt: ceoJobPrompt(job, floor, triage),
-        systemAppend: ceoSystemPrompt(this.ceoPromptInput(a)),
-        model: a.model || CEO_MODEL,
+        systemAppend: ceoSystemPrompt(this.ceoPromptInput(a, nanoSkill)),
+        model: harness === 'claude' ? a.model || CEO_MODEL : a.model,
         effort: a.effort || CEO_EFFORT,
         browserTesting: false,
         additionalDirectories: this.state.repos.filter((r) => this.repoRt.get(r.id)?.cloneStatus === 'ready').map((r) => this.backend.mainDir(r.fullName)),
@@ -3827,7 +3864,8 @@ export class Swarm {
         },
         sessionId: (id) => {
           a.sessionId = id;
-          a.sessionCli = id ? 'claude' : null;
+          a.sessionCli = id && harness === 'claude' ? 'claude' : null;
+          this.state.ceo.sessionHarness = harness;
         },
         browserUrl: () => undefined,
         screenshot: () => undefined,
@@ -3876,9 +3914,9 @@ export class Swarm {
   async messageCeo(text: string) {
     const t = text.trim().slice(0, 4000);
     if (!t) throw new HttpError(400, 'Empty message');
-    if (this.nano) return this.messageNano(t);
+    if (this.nano && (await this.messageNano(t))) return;
     const a = this.ceo();
-    this.postMessage('manager', t);
+    if (!this.nano) this.postMessage('manager', t);
     const rt = this.agentRt.get(a.id)!;
     if (rt.session) {
       this.appendLog(a, [{ kind: 'manager', text: `▶ Manager: ${t}` }]);
@@ -4570,7 +4608,13 @@ export class Swarm {
   }
 
   /** The manager's phone in nano mode: answers to escalations, "status", or how to use it. */
-  private async messageNano(t: string) {
+  /** Nano mode has a CEO only on an ACP harness: its sessions are the only real ones here (nano/backend.ts). */
+  private nanoCeo() {
+    return this.state.settings.ceoHarness !== 'claude';
+  }
+
+  /** A nano command (`status`, `answer …`, `start …`) answered on the phone; false: it's for the CEO. */
+  private async messageNano(t: string): Promise<boolean> {
     this.postMessage('manager', t);
     let reply: string | null;
     try {
@@ -4578,12 +4622,11 @@ export class Swarm {
     } catch (err) {
       reply = `❌ ${(err as Error).message}`;
     }
-    if (reply === null) {
-      reply = /^\s*status\b/i.test(t)
-        ? this.nano!.summary()
-        : 'nano-workforce runs the work here: every floor is one of its running processes. Text `status` for what\'s in flight, `answer <id> …` to answer an escalation, or `start owner/repo#123` to hand it an issue.';
-    }
+    if (reply === null && /^\s*status\b/i.test(t)) reply = this.nano!.summary();
+    if (reply === null && this.nanoCeo()) return false;
+    reply ??= 'nano-workforce runs the work here: every floor is one of its running processes. Text `status` for what\'s in flight, `answer <id> …` to answer an escalation, or `start owner/repo#123` to hand it an issue. To talk it over with the CEO, set the CEO to run on nano-coder or Copilot (Settings).';
     this.postMessage('ceo', reply);
+    return true;
   }
 
   private postMessage(from: PhoneMessage['from'], text: string, requestId?: string) {

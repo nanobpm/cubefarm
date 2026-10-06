@@ -59,6 +59,7 @@ let officeUrl = '';
 export function setOfficeUrl(url: string) {
   officeUrl = url;
 }
+export const officeAddress = () => officeUrl;
 
 interface Route {
   hook(body: Record<string, unknown>): Record<string, unknown>;

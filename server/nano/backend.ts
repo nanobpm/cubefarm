@@ -3,6 +3,7 @@
  * served from what the bridge last saw. Nothing is cloned or run here, and the office can't change GitHub: nano-workforce
  * does the work. The rest (voice, weather, previews, the office host…) is the demo backend's harmless stand-ins.
  */
+import { startAcpSession } from '../acpRunner.ts';
 import type { Backend } from '../backend.ts';
 import { createDemoBackend } from '../demo.ts';
 import type { RepoMeta } from '../github.ts';
@@ -29,7 +30,8 @@ const refuse = (what: string) => async (): Promise<never> => {
   throw new Error(`nano-workforce runs this office's work: ${what} happens there (its cockpit or c8ctl), not here.`);
 };
 
-export function createNanoBackend(book: FloorBook, appUrl: string): Backend {
+/** `demo`: the office runs with --demo too, so the CEO stays the demo's scripted one, whatever it runs on. */
+export function createNanoBackend(book: FloorBook, appUrl: string, opts: { demo?: boolean } = {}): Backend {
   const demo = createDemoBackend(null);
   const meta = (fullName: string): RepoMeta => {
     if (fullName.toLowerCase() === BENCH) return { nameWithOwner: BENCH, description: 'Workers waiting for a job', url: appUrl, defaultBranch: 'main' };
@@ -43,6 +45,8 @@ export function createNanoBackend(book: FloorBook, appUrl: string): Backend {
     demoCandidate: undefined,
     demoTeam: undefined,
     demoDoctor: undefined,
+    // The one real session here: a CEO on an ACP harness, driving nano-workforce through its agent skill.
+    startSession: (o, cb) => (o.acp && !opts.demo ? startAcpSession(o.acp, o, cb) : demo.startSession(o, cb)),
     seedOps: undefined,
     simulateUsage: undefined,
     user: async () => 'nano-workforce',

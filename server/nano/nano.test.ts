@@ -244,6 +244,15 @@ describe('client', () => {
     expect((init.headers as Record<string, string>)['x-hook-secret']).toBe('s');
   });
 
+  it("sends Basic Auth and reads the agent skill", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ format: 'markdown', skill: '# skill' }), { status: 200 }));
+    const c = nanoClient('http://merlin.local:3000', { auth: 'Basic dTpw', fetch: f as unknown as typeof fetch });
+    expect(await c.agentSkill()).toBe('# skill');
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('http://merlin.local:3000/app/api/agent/skill');
+    expect((init.headers as Record<string, string>).authorization).toBe('Basic dTpw');
+  });
+
   it('reports errors', async () => {
     const f = vi.fn(async () => new Response(JSON.stringify({ error: 'bad base' }), { status: 400 }));
     const c = nanoClient('http://h', { fetch: f as unknown as typeof fetch });
@@ -276,6 +285,7 @@ describe('bridge', () => {
       transcript: async (stream, from) => (stream === 'job:j1' && from === 0 ? { status: 'open', nextOffset: 3, entries: [{ offset: 0, chunk: 'hello\nworld\n' }] } : null),
       startPlanFanout: vi.fn(async () => ({})),
       completeUserTask: vi.fn(async () => ({})),
+      agentSkill: async () => '# skill',
       ...over,
     };
     const engine: EngineApi = {

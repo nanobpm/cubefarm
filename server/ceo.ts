@@ -50,8 +50,20 @@ export interface OfficeTools {
   server: McpSdkServerConfigWithInstance;
   /** A fresh MCP server with the same tools, for one request from a CEO running in a terminal (served over HTTP). */
   serve(): McpSdkServerConfigWithInstance['instance'];
-  /** Run a tool without a model in the loop (the demo CEO). */
+  /** The tools listed for the CEO's instructions, when it calls them through the shell command. */
+  catalog(): string;
+  /** Run a tool without a model in the loop (the demo CEO, and the shell command for harnesses without MCP). */
   call(name: string, args: Record<string, unknown>): Promise<string>;
+}
+
+/** The office tools as a CEO without MCP reads them: one line each, `name {arg, optional?}: description`. */
+export function toolCatalog(defs: { name: string; description: string; inputSchema: Record<string, z.ZodType> }[]): string {
+  return defs
+    .map((d) => {
+      const args = Object.entries(d.inputSchema).map(([k, t]) => (t.safeParse(undefined).success ? `${k}?` : k));
+      return `- ${d.name}${args.length ? ` {${args.join(', ')}}` : ''}: ${d.description}`;
+    })
+    .join('\n');
 }
 
 const EFFORT = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -199,10 +211,13 @@ export function createOfficeTools(h: OfficeHandlers): OfficeTools {
   return {
     server,
     serve: () => createSdkMcpServer({ name: 'office', version: '1.0.0', tools: defs }).instance,
+    catalog: () => toolCatalog(defs as never),
     async call(name, args) {
       const def = defs.find((d) => d.name === name);
-      if (!def) throw new Error(`No office tool ${name}`);
-      const res = (await def.handler(args as never, undefined)) as { content: { text?: string }[] };
+      if (!def) throw new Error(`No office tool ${name}. The tools: ${defs.map((d) => d.name).join(', ')}.`);
+      const parsed = z.object(def.inputSchema as Record<string, z.ZodType>).safeParse(args);
+      if (!parsed.success) throw new Error(`Bad arguments for ${name}: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`);
+      const res = (await def.handler(parsed.data as never, undefined)) as { content: { text?: string }[] };
       return res.content.map((c) => c.text ?? '').join('\n');
     },
   };
@@ -240,6 +255,10 @@ export function ceoSystemPrompt(o: {
   sessionLimit: number;
   teamCap: number;
   hiring: 'approve' | 'auto';
+  /** A harness without MCP: the office tools are a shell command (`<command> <tool> '<json>'`), listed in `catalog`. */
+  shellTools?: { command: string; catalog: string };
+  /** nano-workforce's agent skill (--nano): how to drive the nano-workforce app behind the office. */
+  nanoSkill?: string;
 }) {
   const manager = o.manager ? `the manager, ${o.manager}` : 'the human manager';
   return [
@@ -255,12 +274,21 @@ export function ceoSystemPrompt(o: {
     "- Write each floor's QA brief: what QA testers must check for this kind of project (for a 3D game: the canvas renders, controls respond, frame rate is smooth; for a website: links, phone layout, accessibility; for an API: status codes, validation, error cases).",
     '',
     'How you work:',
-    '- Call mcp__office__company_status first. It lists every floor, its clone path, team, backlog, pull requests and your pending proposals.',
-    '- Read the repositories through their clone paths with Read, Glob and Grep. They are read-only to you. You cannot run shell commands.',
-    `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time.`,
-    '- Change things only through the mcp__office__ tools.',
+    ...(o.shellTools
+      ? [
+          `- The office tools are a shell command: ${o.shellTools.command} <tool> '<json arguments>' (a JSON object; use {} for none). It prints the result, and exits non-zero when the office refuses, with the reason. Call company_status first: it lists every floor, its clone path, team, backlog, pull requests and your pending proposals.`,
+          '- Read the repositories through their clone paths. They are read-only to you: run no other commands that change anything.',
+          `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time.`,
+          '- Change things only through the office tools.',
+        ]
+      : [
+          '- Call mcp__office__company_status first. It lists every floor, its clone path, team, backlog, pull requests and your pending proposals.',
+          '- Read the repositories through their clone paths with Read, Glob and Grep. They are read-only to you. You cannot run shell commands.',
+          `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time.`,
+          '- Change things only through the mcp__office__ tools.',
+        ]),
     `- ${ONE_TURN}`,
-    "- Before update_job rewrites someone's job description, read the full one with mcp__office__agent_detail and keep what still applies, especially its safety rules.",
+    `- Before update_job rewrites someone's job description, read the full one with ${o.shellTools ? 'agent_detail' : 'mcp__office__agent_detail'} and keep what still applies, especially its safety rules.`,
     '',
     'Rules:',
     '- Every floor keeps at least one QA tester.',
@@ -272,6 +300,10 @@ export function ceoSystemPrompt(o: {
     '- Triage jobs: a pull request got stuck (needs-human). Look before the manager does, and bring them only real decisions. Read the facts in the job and the code, then call exactly one of retry_qa (a flaky QA session, or it has been fixed since), send_back (a developer can fix it; your note says how), rerun_checks (a red check that looks flaky or like an outage), close_pull (the approach is wrong: its issue stays open to be built again) or escalate (only the manager can decide: a product call, credentials, a broken setup).',
     "- When company.usage in company_status says pacing or paused, Claude's usage is running low and the office is finishing open work first: file only what is needed next, not a whole milestone.",
     '- Your final message goes straight to the manager\'s phone. Keep it short and plain: what you found, what you proposed, what you filed, and any question you need answered. No headings, no tables.',
+    ...(o.shellTools ? ['', 'The office tools:', o.shellTools.catalog] : []),
+    ...(o.nanoSkill
+      ? ['', "The work itself is run by a nano-workforce app behind the office. Its agent skill, for the manager's requests about it:", '<nano-workforce-skill>', o.nanoSkill.trim(), '</nano-workforce-skill>']
+      : []),
   ].join('\n');
 }
 

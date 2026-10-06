@@ -116,7 +116,7 @@ describe('office tools', () => {
     await office.server.instance.connect(serverSide);
     const client = new Client({ name: 'test', version: '1.0.0' });
     await client.connect(clientSide);
-    return { client, floors };
+    return { client, floors, office };
   };
 
   it('lists every tool the CEO relies on', async () => {
@@ -138,6 +138,22 @@ describe('office tools', () => {
       'set_floor_profile',
       'update_job',
     ]);
+  });
+
+  it('runs a tool by name for the shell command, checking its arguments', async () => {
+    const { office, floors } = await connect();
+    expect(await office.call('set_floor_profile', { floor: 2, summary: 'x' })).toBe('saved');
+    expect(floors).toEqual([{ floor: 2, summary: 'x' }]);
+    await expect(office.call('set_floor_profile', { floor: 'two' })).rejects.toThrow(/Bad arguments for set_floor_profile: floor/);
+    await expect(office.call('hire_everyone', {})).rejects.toThrow(/No office tool hire_everyone.*company_status/);
+  });
+
+  it('lists the tools for a CEO without MCP, optional arguments marked', async () => {
+    const { office } = await connect();
+    const lines = office.catalog().split('\n');
+    expect(lines).toHaveLength(14);
+    expect(lines.find((l) => l.startsWith('- company_status:'))).toBeTruthy();
+    expect(lines.find((l) => l.startsWith('- file_issue '))).toMatch(/^- file_issue \{floor, title, body, specialty\?\}: /);
   });
 
   it('still takes preview_env as a map of strings', async () => {
@@ -243,6 +259,23 @@ describe('planRoute (route_issue)', () => {
 
   it('needs something to change', () => {
     expect(() => route({})).toThrow(/Nothing to change/);
+  });
+});
+
+describe('the CEO on another harness', () => {
+  const base = { name: 'Morgan', company: 'Acme', manager: 'Sam', notesFile: 'NOTES.md', sessionLimit: 0, teamCap: 5, hiring: 'approve' as const };
+
+  it('gets the office tools as a shell command, not MCP', () => {
+    const p = ceoSystemPrompt({ ...base, shellTools: { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' } });
+    expect(p).toContain(`node "/x/cubefarm-office.cjs" <tool> '<json arguments>'`);
+    expect(p).toContain('- company_status: everything');
+    expect(p).not.toContain('mcp__office__');
+    expect(ceoSystemPrompt(base)).toContain('mcp__office__company_status');
+  });
+
+  it("carries nano-workforce's skill when there is one", () => {
+    expect(ceoSystemPrompt({ ...base, nanoSkill: '# Nano Workforce operator skill\n' })).toMatch(/<nano-workforce-skill>\n# Nano Workforce operator skill\n<\/nano-workforce-skill>/);
+    expect(ceoSystemPrompt(base)).not.toContain('nano-workforce');
   });
 });
 

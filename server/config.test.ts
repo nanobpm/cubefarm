@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { defaultProjectsDir, demoScale, envMinutes, envPort } from './config.ts';
+import { defaultProjectsDir, demoScale, envMinutes, envPort, splitUrlAuth } from './config.ts';
 
 let tmp: string;
 beforeEach(() => {
@@ -46,5 +46,12 @@ describe('demoScale', () => {
     expect(demoScale([], { SWARM_DEMO_FLOORS: '4', SWARM_DEMO_AGENTS: '9' })).toEqual({ floors: 4, agents: 9 });
     expect(demoScale(['--floors', '99', '--agents', '40'], {})).toEqual({ floors: 20, agents: 15 });
     expect(demoScale(['--agents', '0'], {})).toEqual({ floors: 2, agents: 1 });
+  });
+});
+
+describe('splitUrlAuth (--nano)', () => {
+  it('turns user:pass@ into a Basic Auth header and takes it out of the URL', () => {
+    expect(splitUrlAuth('http://ops:s%40cret@merlin.local:3000')).toEqual({ url: 'http://merlin.local:3000', auth: `Basic ${Buffer.from('ops:s@cret').toString('base64')}` });
+    expect(splitUrlAuth('http://merlin.local:3000')).toEqual({ url: 'http://merlin.local:3000' });
   });
 });

@@ -54,7 +54,18 @@ function engineUrl(argv: string[], env: NodeJS.ProcessEnv, app: string): string 
   return `${u.protocol}//${u.hostname}:8080`;
 }
 // Floors are nano-workforce's running processes, never GitHub repos (server/nano/backend.ts), with or without --demo.
-export const NANO_URL = nanoUrl(process.argv, process.env);
+const NANO_RAW = nanoUrl(process.argv, process.env);
+/** Basic Auth in the URL (http://user:pass@host:3000) becomes a header, so the URL shown and logged has no password. */
+export function splitUrlAuth(raw: string): { url: string; auth?: string } {
+  const u = new URL(raw);
+  if (!u.username && !u.password) return { url: raw };
+  const auth = `Basic ${Buffer.from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`).toString('base64')}`;
+  u.username = '';
+  u.password = '';
+  return { url: u.toString().replace(/\/$/, ''), auth };
+}
+const NANO_SPLIT = NANO_RAW ? splitUrlAuth(NANO_RAW) : null;
+export const NANO_URL = NANO_SPLIT?.url ?? null;
 export const NANO = NANO_URL
   ? {
       url: NANO_URL,
@@ -63,6 +74,7 @@ export const NANO = NANO_URL
       baseBranch: process.env.CUBEFARM_NANO_BASE_BRANCH ?? '',
       engine: engineUrl(process.argv, process.env, NANO_URL),
       engineAuth: process.env.CUBEFARM_NANO_ENGINE_AUTH || undefined, // an Authorization header value, e.g. "Basic …"
+      auth: process.env.CUBEFARM_NANO_AUTH || NANO_SPLIT?.auth, // the app's, likewise; or user:pass@ in the URL
     }
   : null;
 

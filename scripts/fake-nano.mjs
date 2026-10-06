@@ -72,6 +72,10 @@ http
         correlations: workers.filter((w) => w.job).map((w) => w.job),
       });
     }
+    if (req.method === 'GET' && p === '/agent/skill') {
+      const skill = '---\nname: nano-workforce\ndescription: Drive the fake nano-workforce.\n---\n\n# Fake nano-workforce\n\nGET /status lists PRs in flight; POST /actions/start/plan-fanout {issue, baseBranch} starts an issue.\n';
+      return json(res, 200, { format: 'markdown', appVersion: 'fake', baseUrl: `http://${req.headers.host}/app/api`, skill });
+    }
     if (req.method === 'GET' && p === '/status') return json(res, 200, { count: prs.size, prs: [...prs.values()] });
     if (req.method === 'GET' && p === '/escalations') return json(res, 200, { count: escalations.length, escalations });
     if (req.method === 'GET' && p === '/agentic/transcripts') {

@@ -214,6 +214,7 @@ export const useStore = create<State>((set, get) => ({
     hiring: 'approve',
     teamCap: 6,
     ceoHeartbeatMin: 60,
+    ceoHarness: 'claude',
     managerName: '',
     companyName: '',
     dogName: DEFAULT_DOG_NAME,

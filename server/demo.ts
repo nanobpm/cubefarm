@@ -1378,7 +1378,7 @@ function ceoSession(opts: SessionOptions, cb: SessionCallbacks): SessionHandle {
   timers.push(
     setTimeout(async () => {
       try {
-        cb.log([{ kind: 'system', text: `✻ Claude Code (demo) · ${opts.model} · ${opts.effort} effort · CEO` }]);
+        cb.log([{ kind: 'system', text: opts.acp ? `✻ ${opts.acp} over ACP (demo) · ${opts.model || 'its default model'} · CEO` : `✻ Claude Code (demo) · ${opts.model} · ${opts.effort} effort · CEO` }]);
         const reply = await run();
         cb.log([{ kind: 'text', text: `● ${reply}` }]);
         cb.turn?.(reply);
