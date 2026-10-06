@@ -217,7 +217,7 @@ export type AgentTask = 'issue' | 'qa' | 'fix';
  */
 export type AgentRuntime = 'terminal' | 'sdk';
 
-/** The coding-agent CLI an agent runs in its terminal. The CEO is always Claude Code. */
+/** The coding-agent CLI a worker runs in its terminal. The CEO's harness is CeoHarness, not this. */
 export type AgentCli = 'claude' | 'codex' | 'opencode';
 /** What the CEO runs on: Claude Code, or a coding agent spoken to over ACP (Agent Client Protocol, `<cli> --acp`). */
 export type CeoHarness = 'claude' | 'nano-coder' | 'copilot';

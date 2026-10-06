@@ -202,7 +202,8 @@ export function startAcpSession(harness: Exclude<CeoHarness, 'claude'>, opts: Se
         }
         replaying = false;
       }
-      queue.unshift(sessionId ? opts.prompt : firstPrompt(opts));
+      // Resumed turns still prepend systemAppend so the refreshed skill/instructions reach a loaded session.
+      queue.unshift(firstPrompt(opts));
       if (!sessionId) sessionId = (await request<{ sessionId: string }>('session/new', { cwd: opts.cwd, mcpServers: [] })).sessionId;
       cb.sessionId(sessionId);
       void runQueue();

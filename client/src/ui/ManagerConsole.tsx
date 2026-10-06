@@ -620,7 +620,7 @@ function SettingsTab() {
         </label>
         <p className="muted small">
           {terminal
-            ? 'Each worker can use their own coding agent, model and effort (Team tab); the CEO always runs Claude Code. Claude Code reports every step; Codex and OpenCode are experimental: the office sees their task rather than each step.'
+            ? "Each worker can use their own coding agent, model and effort (Team tab); the CEO's harness is set under 🧠 The CEO below. Claude Code reports every step; Codex and OpenCode are experimental: the office sees their task rather than each step."
             : 'The Agent SDK runs Claude Code. Each worker can use their own model and effort (Team tab).'}
         </p>
         <label className="field">

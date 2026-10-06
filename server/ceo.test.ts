@@ -277,6 +277,21 @@ describe('the CEO on another harness', () => {
     expect(ceoSystemPrompt({ ...base, nanoSkill: '# Nano Workforce operator skill\n' })).toMatch(/<nano-workforce-skill>\n# Nano Workforce operator skill\n<\/nano-workforce-skill>/);
     expect(ceoSystemPrompt(base)).not.toContain('nano-workforce');
   });
+
+  it('permits nano-workforce mutations when the skill is present, but keeps clones read-only', () => {
+    const shellTools = { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' };
+    const nano = ceoSystemPrompt({ ...base, shellTools, nanoSkill: '# skill\n' });
+    // The blanket "no commands that change anything" rule must not forbid the nano-workforce skill the prompt then hands over.
+    expect(nano).not.toContain('run no other commands that change anything');
+    expect(nano).toContain('never edit their files');
+    expect(nano).toContain('nano-workforce commands in the skill below');
+    expect(nano).toContain('Change things only through the office tools and the nano-workforce skill below.');
+    // Without the skill the strict read-only restriction stays.
+    const plain = ceoSystemPrompt({ ...base, shellTools });
+    expect(plain).toContain('run no other commands that change anything');
+    expect(plain).toContain('Change things only through the office tools.');
+    expect(plain).not.toContain('nano-workforce');
+  });
 });
 
 describe('planning guidance', () => {

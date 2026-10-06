@@ -277,9 +277,11 @@ export function ceoSystemPrompt(o: {
     ...(o.shellTools
       ? [
           `- The office tools are a shell command: ${o.shellTools.command} <tool> '<json arguments>' (a JSON object; use {} for none). It prints the result, and exits non-zero when the office refuses, with the reason. Call company_status first: it lists every floor, its clone path, team, backlog, pull requests and your pending proposals.`,
-          '- Read the repositories through their clone paths. They are read-only to you: run no other commands that change anything.',
+          o.nanoSkill
+            ? '- The repository clones are read-only reference: never edit their files. Otherwise change things only through the office tools and the nano-workforce commands in the skill below; run nothing else that changes anything.'
+            : '- Read the repositories through their clone paths. They are read-only to you: run no other commands that change anything.',
           `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time.`,
-          '- Change things only through the office tools.',
+          o.nanoSkill ? '- Change things only through the office tools and the nano-workforce skill below.' : '- Change things only through the office tools.',
         ]
       : [
           '- Call mcp__office__company_status first. It lists every floor, its clone path, team, backlog, pull requests and your pending proposals.',

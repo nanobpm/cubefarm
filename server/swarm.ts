@@ -3836,6 +3836,8 @@ export class Swarm {
     this.emitCeo();
     this.save();
     await fs.mkdir(CEO_DIR, { recursive: true }).catch(() => undefined);
+    // Capture the harness when the job is accepted, so a setting change during the awaits below can't misroute this session.
+    const harness = this.state.settings.ceoHarness;
     const triage = job.kind === 'triage' ? await this.triagePr(job) : null;
     const nanoSkill = await this.ceoNanoSkill(a);
     if (a.status !== 'working') {
@@ -3846,7 +3848,6 @@ export class Swarm {
       return;
     }
     // A chat carries on from the CEO's last session, so "why did you propose that?" has an answer.
-    const harness = this.state.settings.ceoHarness;
     const resume = job.kind === 'chat' && (this.state.ceo.sessionHarness ?? 'claude') === harness ? (a.sessionId ?? undefined) : undefined;
     const how = harness === 'claude' ? this.sessionRuntime(a, resume) : { acp: harness, resumeSessionId: resume };
     this.state.ceo.sessionHarness = harness; // the harness that owns this session; the terminal flag follows it, not the setting
