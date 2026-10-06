@@ -45,3 +45,49 @@ describe('CEO phone routing follows the active session, not the setting', () => 
     expect(priv.nanoCeo()).toBe(true);
   });
 });
+
+// Regression (Copilot review): a chat queued while an ACP harness was selected must not be dequeued after the
+// manager switches "Runs on" back to Claude — runCeoJob would launch it as Claude and the nano backend would
+// answer with the scripted demo session. startCeoWork re-validates the queue against the current nano CEO mode.
+describe('nano CEO queue revalidation', () => {
+  function setup() {
+    const swarm = new Swarm(createDemoBackend());
+    (swarm as unknown as { ensureCeo(i: unknown[]): void }).ensureCeo([]);
+    const priv = swarm as unknown as {
+      state: {
+        agents: { id: string; role: string; status: string }[];
+        settings: { ceoHarness: string; sessionLimit: number };
+        ceo: { queue: { kind: string; text?: string; at: number }[]; job: unknown; sessionHarness?: string };
+      };
+      agentRt: Map<string, { session: unknown }>;
+      nano: unknown;
+      startCeoWork(): void;
+    };
+    const ceo = priv.state.agents.find((a) => a.role === 'ceo')!;
+    const rt = priv.agentRt.get(ceo.id)!;
+    return { priv, ceo, rt };
+  }
+
+  it('drops a queued chat once "Runs on" is Claude again', () => {
+    const { priv, rt } = setup();
+    priv.nano = {}; // nano mode
+    priv.state.settings.sessionLimit = 0; // no slot cap
+    rt.session = null;
+    priv.state.settings.ceoHarness = 'claude'; // switched back after the chat was queued
+    priv.state.ceo.queue.push({ kind: 'chat', text: 'status?', at: Date.now() });
+    priv.startCeoWork();
+    expect(priv.state.ceo.queue).toHaveLength(0);
+    expect(priv.state.ceo.job).toBeNull();
+  });
+
+  it('keeps a queued chat while an ACP harness is selected', () => {
+    const { priv, ceo, rt } = setup();
+    priv.nano = {};
+    rt.session = null;
+    priv.state.settings.ceoHarness = 'copilot';
+    ceo.status = 'working'; // busy: revalidation runs but no session is launched
+    priv.state.ceo.queue.push({ kind: 'chat', text: 'status?', at: Date.now() });
+    priv.startCeoWork();
+    expect(priv.state.ceo.queue.some((j) => j.kind === 'chat')).toBe(true);
+  });
+});

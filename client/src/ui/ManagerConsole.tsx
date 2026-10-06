@@ -258,6 +258,7 @@ function CeoTab() {
   const repos = useStore((s) => s.repos);
   const requests = useStore((s) => s.requests);
   const openOverlay = useStore((s) => s.openOverlay);
+  const ceoHarness = useStore((s) => s.settings.ceoHarness);
   const [text, setText] = useState('');
   const scroller = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -286,7 +287,7 @@ function CeoTab() {
             <StatusPill status={ceo.status} />
             <span className="spacer" />
             <ModelInput agent={ceo} style={{ maxWidth: 150 }} />
-            <EffortSelect agent={ceo} style={{ width: 'auto' }} />
+            {ceoHarness === 'claude' && <EffortSelect agent={ceo} style={{ width: 'auto' }} />}
           </div>
           <div className="small">
             <b>Now:</b> {working ? info.job?.label : 'free'}

@@ -3778,6 +3778,13 @@ export class Swarm {
       this.emitCeo();
       this.save();
     }
+    // A chat queued for an ACP CEO is stale once "Runs on" is Claude again: enqueueCeo only vets new jobs, so
+    // re-check here or runCeoJob would launch it as Claude and the nano backend would answer with the scripted demo.
+    if (this.nano && !this.nanoCeo() && c.queue.some((j) => j.kind === 'chat')) {
+      c.queue = c.queue.filter((j) => j.kind !== 'chat');
+      this.emitCeo();
+      this.save();
+    }
     if (!a || BUSY.includes(a.status) || c.job || c.queue.length === 0) return;
     if (this.slotsFull()) return;
     const rank: Record<CeoJob['kind'], number> = { chat: 0, triage: 0, onboard: 1, plan: 1, review: 2 };

@@ -20,6 +20,9 @@ export const cliName = (clis: CliView[], id: AgentCli) => clis.find((c) => c.id 
 export const workerCli = (a: Pick<Agent, 'cli' | 'role'>, settings: Pick<SwarmSettings, 'runtime' | 'defaultCli'>): AgentCli =>
   a.role === 'ceo' || settings.runtime !== 'terminal' ? 'claude' : a.cli || settings.defaultCli;
 
+/** The CLI whose model names fit the CEO: Claude Code's for Claude; an ACP harness names its own (no Claude list). */
+const ceoModelCli = (settings: Pick<SwarmSettings, 'ceoHarness'>): AgentCli => (settings.ceoHarness === 'claude' ? 'claude' : 'opencode');
+
 type Patch = Parameters<typeof api.updateAgent>[1];
 
 async function save(id: string, patch: Patch) {
@@ -80,7 +83,8 @@ export function CliSelect({ agent, id, style }: FieldProps) {
 export function ModelInput({ agent, id, className = 'inline', style }: FieldProps) {
   const settings = useStore((s) => s.settings);
   const listId = useId();
-  const cli = workerCli(agent, settings);
+  const cli = agent.role === 'ceo' ? ceoModelCli(settings) : workerCli(agent, settings);
+  const acpCeo = agent.role === 'ceo' && settings.ceoHarness !== 'claude';
   return (
     <>
       <input
@@ -90,8 +94,8 @@ export function ModelInput({ agent, id, className = 'inline', style }: FieldProp
         style={style}
         list={listId}
         defaultValue={agent.model}
-        placeholder={(agent.role === 'ceo' ? CLAUDE_MODELS[0] : effectiveModel('', cli, settings, CLAUDE_MODELS[0])) || 'agent default'}
-        title={agent.role === 'ceo' ? "The CEO's model" : "Their model ('' = the default for their coding agent)"}
+        placeholder={(agent.role === 'ceo' ? (acpCeo ? '' : CLAUDE_MODELS[0]) : effectiveModel('', cli, settings, CLAUDE_MODELS[0])) || 'agent default'}
+        title={agent.role === 'ceo' ? (acpCeo ? "The CEO's model ('' = the harness's own default)" : "The CEO's model") : "Their model ('' = the default for their coding agent)"}
         aria-label={id ? undefined : 'Model'}
         onBlur={(e) => e.target.value !== agent.model && void save(agent.id, { model: e.target.value })}
       />
@@ -374,6 +378,7 @@ export function PromptPreview({ agent }: { agent: Agent }) {
 /** The ⚙️ Setup section of an agent's panel. The CEO's harness is chosen in the manager console, so here they only get model and effort. */
 export function AgentSetup({ agent }: { agent: Agent }) {
   const terminal = useStore((s) => s.settings.runtime === 'terminal');
+  const settings = useStore((s) => s.settings);
   const id = useId();
   const ceo = agent.role === 'ceo';
   return (
@@ -409,10 +414,12 @@ export function AgentSetup({ agent }: { agent: Agent }) {
           <span>Model</span>
           <ModelInput agent={agent} id={`${id}-model`} className="" />
         </label>
-        <label className="field" htmlFor={`${id}-effort`}>
-          <span>Effort</span>
-          <EffortSelect agent={agent} id={`${id}-effort`} />
-        </label>
+        {(!ceo || settings.ceoHarness === 'claude') && (
+          <label className="field" htmlFor={`${id}-effort`}>
+            <span>Effort</span>
+            <EffortSelect agent={agent} id={`${id}-effort`} />
+          </label>
+        )}
         {!ceo && (
           <label className="field" htmlFor={`${id}-title`}>
             <span>Title</span>
