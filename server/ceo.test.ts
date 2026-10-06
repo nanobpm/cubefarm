@@ -393,6 +393,49 @@ describe('triage', () => {
   });
 });
 
+describe('ceoJobPrompt with no clone (nano mode)', () => {
+  // Nano mode keeps no repository clones, so ceoFloor passes clone: null. The prompt must not hand the CEO a
+  // clone path to read (it would be a /demo/... stand-in that does not exist), in any job kind.
+  const bare = (mission: string, backlog: number) => ({ floor: 2, fullName: 'acme/app', clone: null, mission, backlog });
+  const pr = {
+    number: 108,
+    title: 'Jukebox volume',
+    url: 'https://github.com/acme/app/pull/108',
+    round: 3,
+    why: 'stuck',
+    summary: 'ok',
+    fixInstructions: '',
+    mergeNote: '',
+    checks: 'passing',
+    failedChecks: [],
+    pendingChecks: [],
+    mergeable: 'MERGEABLE',
+    mergeState: 'CLEAN',
+    triage: 1,
+  };
+
+  it('omits the clone sentence in triage, onboard and plan, but keeps the rest', () => {
+    const triage = ceoJobPrompt({ kind: 'triage', repoId: 'r1', prNumber: 108, at: 0 }, bare('', 0), pr);
+    expect(triage).not.toContain('clone');
+    expect(triage).toContain('https://github.com/acme/app/pull/108');
+
+    const onboard = ceoJobPrompt({ kind: 'onboard', repoId: 'r1', at: 0 }, bare('Add voice', 0));
+    expect(onboard).not.toContain('clone');
+    expect(onboard).toContain('just joined the company.');
+
+    const plan = ceoJobPrompt({ kind: 'plan', repoId: 'r1', at: 0 }, bare('Add voice', 2));
+    expect(plan).not.toContain('clone');
+    expect(plan).toContain('(acme/app):');
+  });
+
+  it('still names the clone path when one exists', () => {
+    const withClone = { floor: 2, fullName: 'acme/app', clone: '/clones/app', mission: 'Add voice', backlog: 0 };
+    expect(ceoJobPrompt({ kind: 'onboard', repoId: 'r1', at: 0 }, withClone)).toContain('read-only clone is at /clones/app');
+    expect(ceoJobPrompt({ kind: 'plan', repoId: 'r1', at: 0 }, withClone)).toContain('clone at /clones/app');
+    expect(ceoJobPrompt({ kind: 'triage', repoId: 'r1', prNumber: 108, at: 0 }, withClone, pr)).toContain('read-only clone of the default branch at /clones/app');
+  });
+});
+
 describe('floorCapacity', () => {
   // #1 ← #2 ← #3, and #5 waits for #4. #2 is already in progress.
   const issues = [

@@ -3753,7 +3753,7 @@ export class Swarm {
   private ceoFloor(repoId?: string) {
     const repo = repoId ? this.state.repos.find((r) => r.id === repoId) : undefined;
     if (!repo) return null;
-    return { floor: repo.floor, fullName: repo.fullName, clone: this.backend.mainDir(repo.fullName), mission: repo.mission, backlog: this.repoRt.get(repo.id)?.issues.length ?? 0 };
+    return { floor: repo.floor, fullName: repo.fullName, clone: this.nano ? null : this.backend.mainDir(repo.fullName), mission: repo.mission, backlog: this.repoRt.get(repo.id)?.issues.length ?? 0 };
   }
 
   private ceoInfo(): CeoInfo {
@@ -4925,7 +4925,9 @@ export class Swarm {
           floor: r.floor,
           repo: r.fullName,
           description: r.description,
-          clone: rt.cloneStatus === 'ready' ? this.backend.mainDir(r.fullName) : `(not available: clone ${rt.cloneStatus})`,
+          // Nano mode keeps no repository clones (its backend's mainDir is a /demo/... stand-in that ensureClone never
+          // creates), so report none rather than a path the CEO would try to Read and fail on.
+          clone: this.nano ? null : rt.cloneStatus === 'ready' ? this.backend.mainDir(r.fullName) : `(not available: clone ${rt.cloneStatus})`,
           brief: r.mission || null,
           profile: r.summary || null,
           qaBrief: r.qaBrief || null,

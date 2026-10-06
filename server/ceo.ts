@@ -309,13 +309,13 @@ export function ceoSystemPrompt(o: {
   ].join('\n');
 }
 
-export function ceoJobPrompt(job: CeoJob, floor: { floor: number; fullName: string; clone: string; mission: string; backlog: number } | null, pr?: TriagePr | null): string {
+export function ceoJobPrompt(job: CeoJob, floor: { floor: number; fullName: string; clone: string | null; mission: string; backlog: number } | null, pr?: TriagePr | null): string {
   switch (job.kind) {
     case 'triage':
       if (!floor || !pr) return `Pull request #${job.prNumber ?? '?'} no longer needs triage. Reply "Nothing to do."`;
       return [
         `Triage: pull request #${pr.number} on floor ${floor.floor} (${floor.fullName}) is stuck and needs a decision before it reaches the manager.`,
-        `"${pr.title}" · ${pr.url} · read-only clone of the default branch at ${floor.clone}`,
+        `"${pr.title}" · ${pr.url}${floor.clone ? ` · read-only clone of the default branch at ${floor.clone}` : ''}`,
         `Why it stopped: ${pr.why ?? 'unknown'}`,
         `QA round ${pr.round}. QA summary: ${pr.summary ?? 'none yet'}`,
         pr.fixInstructions ? `QA's fix instructions:\n${pr.fixInstructions}` : '',
@@ -330,7 +330,7 @@ export function ceoJobPrompt(job: CeoJob, floor: { floor: number; fullName: stri
     case 'onboard':
       if (!floor) return 'A floor was added but has since been removed. Reply "Nothing to do."';
       return [
-        `Floor ${floor.floor} (${floor.fullName}) just joined the company. Its read-only clone is at ${floor.clone}.`,
+        `Floor ${floor.floor} (${floor.fullName}) just joined the company.${floor.clone ? ` Its read-only clone is at ${floor.clone}.` : ''}`,
         'Study it: README, package manifest, source layout, tests, and how far along it is. Then:',
         "1. set_floor_profile with a one-line summary and a QA brief for this project. If npm run dev / start / preview wouldn't serve the app on PORT, also set preview_command (and preview_env) so the floor's preview monitor can run it.",
         '2. update_job for the people already on the floor so their titles, specialties and job descriptions fit this project (every floor starts with a generalist QA tester).',
@@ -344,7 +344,7 @@ export function ceoJobPrompt(job: CeoJob, floor: { floor: number; fullName: stri
     case 'plan':
       if (!floor) return 'A floor you were asked to plan has been removed. Reply "Nothing to do."';
       return [
-        `The manager has a brief for floor ${floor.floor} (${floor.fullName}, clone at ${floor.clone}):`,
+        `The manager has a brief for floor ${floor.floor} (${floor.fullName}${floor.clone ? `, clone at ${floor.clone}` : ''}):`,
         `"""${floor.mission}"""`,
         '',
         'Plan the next milestone toward it:',
