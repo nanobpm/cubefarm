@@ -44,6 +44,25 @@ describe('CEO phone routing follows the active session, not the setting', () => 
     priv.state.settings.ceoHarness = 'copilot';
     expect(priv.nanoCeo()).toBe(true);
   });
+
+  // Regression (Copilot review 5436260674): between accepting a job and installing its session, `session` is
+  // still null but the job already owns a harness (startingHarness). Routing must follow it so a "Runs on"
+  // change landing in that startup window can't divert the phone to the wrong CEO.
+  it('routes by the accepting ACP harness during startup, even after the setting flips to Claude', () => {
+    const { priv, rt } = setup();
+    rt.session = null; // not installed yet
+    (rt as { startingHarness?: string }).startingHarness = 'copilot'; // the job that accepted ownership
+    priv.state.settings.ceoHarness = 'claude'; // the manager flips the setting mid-startup
+    expect(priv.nanoCeo()).toBe(true);
+  });
+
+  it('routes by the accepting Claude harness during startup, even after the setting flips to an ACP harness', () => {
+    const { priv, rt } = setup();
+    rt.session = null;
+    (rt as { startingHarness?: string }).startingHarness = 'claude';
+    priv.state.settings.ceoHarness = 'copilot';
+    expect(priv.nanoCeo()).toBe(false);
+  });
 });
 
 // Regression (Copilot review): a chat queued while an ACP harness was selected must not be dequeued after the
@@ -200,5 +219,32 @@ describe('runCeoJob captures the harness before any await', () => {
     await p;
     // Claude's default model, not the ACP pass-through (''), proves the pre-await capture won the race.
     expect(launched?.model).toBe('claude-opus-5-5');
+  });
+
+  // Regression (Copilot review 5436260674): the accepting harness must own routing through the whole startup
+  // window (before `session` exists), and the startup marker must be cleared once the session installs.
+  it('routes by the accepting harness while startup is installing the session, then clears the marker', async () => {
+    const swarm = new Swarm(createDemoBackend());
+    (swarm as unknown as { ensureCeo(i: unknown[]): void }).ensureCeo([]);
+    const priv = swarm as unknown as {
+      state: { agents: { id: string; role: string }[]; settings: { ceoHarness: string } };
+      agentRt: Map<string, { session: unknown; startingHarness?: string | null }>;
+      backend: { startSession(o: unknown, c: unknown): unknown };
+      runCeoJob(a: unknown, job: unknown): Promise<void>;
+      nanoCeo(): boolean;
+    };
+    const ceo = priv.state.agents.find((a) => a.role === 'ceo')!;
+    const rt = priv.agentRt.get(ceo.id)!;
+    priv.state.settings.ceoHarness = 'copilot'; // the harness that accepts the job
+    let nanoWhileInstalling: boolean | undefined;
+    const orig = priv.backend.startSession.bind(priv.backend);
+    priv.backend.startSession = (o: unknown, c: unknown) => {
+      priv.state.settings.ceoHarness = 'claude'; // the manager flips "Runs on" just before the session installs
+      nanoWhileInstalling = priv.nanoCeo(); // session not yet assigned: must still follow the ACP starting harness
+      return orig(o, c);
+    };
+    await priv.runCeoJob(ceo, { kind: 'chat', text: 'hi', at: Date.now() });
+    expect(nanoWhileInstalling).toBe(true); // on old code this read the flipped setting and returned false
+    expect(rt.startingHarness ?? null).toBe(null); // the marker is cleared once the session owns routing
   });
 });

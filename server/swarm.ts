@@ -232,6 +232,7 @@ interface Shot {
 interface AgentRuntime {
   log: LogLine[];
   session: SessionHandle | null;
+  startingHarness?: CeoHarness | null; // the CEO harness that accepted this job, set before any await and cleared once the session installs or startup aborts: routing must follow it even before `session` exists
   currentTool: string | null;
   browserUrl: string | null;
   screenshot: { data: Buffer; mime: string; at: number } | null;
@@ -3691,7 +3692,10 @@ export class Swarm {
    */
   private ceoActiveHarness(): CeoHarness {
     const rt = this.agentRt.get(CEO_ID);
-    return rt?.session ? (this.state.ceo.sessionHarness ?? 'claude') : this.state.settings.ceoHarness;
+    if (rt?.session) return this.state.ceo.sessionHarness ?? 'claude';
+    // Between accepting a job and installing its session, `session` is still null but the job already owns a
+    // harness; route by it so a mid-startup "Runs on" change can't misroute the phone to the wrong CEO.
+    return rt?.startingHarness ?? this.state.settings.ceoHarness;
   }
 
   /** The company always has a CEO. One cut off by a server restart picks its job back up. */
@@ -3876,11 +3880,13 @@ export class Swarm {
     // misconfigure this session — it belongs to the harness that accepted it.
     const harness = this.state.settings.ceoHarness;
     const model = harness === 'claude' ? a.model || CEO_MODEL : a.model;
+    rt.startingHarness = harness; // own the harness through the awaits below, before `session` exists, so routing can't follow a mid-startup "Runs on" change
     await fs.mkdir(CEO_DIR, { recursive: true }).catch(() => undefined);
     const triage = job.kind === 'triage' ? await this.triagePr(job) : null;
     const nanoSkill = await this.ceoNanoSkill(a);
     if (a.status !== 'working') {
       // stopped before the session started
+      rt.startingHarness = null;
       this.state.ceo.job = null;
       if (job.kind === 'triage') this.endTriage(job);
       this.emitCeo();
@@ -3934,6 +3940,7 @@ export class Swarm {
         finished: (result) => this.onCeoFinished(a, result),
       },
     );
+    rt.startingHarness = null; // the session now owns routing via `sessionHarness`; drop the startup marker so it can't go stale after the session ends
   }
 
   private onCeoFinished(a: PersistedAgent, result: SessionResult) {
