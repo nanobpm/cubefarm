@@ -3,7 +3,7 @@ import { TeamStats } from './CareerCard';
 import { api } from '../api';
 import { PreviewPill, PreviewSettings } from './AppViewer';
 import { agentsOnRepo, pendingRequests, useStore, type ManagerTab } from '../store';
-import { CEO_ID, type AgentCli, type EffortLevel, type OfficeUpdateView, type RepoView } from '../../../shared/types';
+import { CEO_HARNESSES, CEO_ID, type AgentCli, type CeoHarness, type EffortLevel, type OfficeUpdateView, type RepoView } from '../../../shared/types';
 import { CLAUDE_MODELS } from '../../../shared/models';
 import { BriefEditor, CliOptions, CliSelect, cliName, EFFORTS, EffortSelect, LookSelect, ModelInput, NameInput, PromptPreview, SpecialtyInput, TitleInput } from './AgentSettings';
 import { canPostpone, canUpdateNow, drainDeadline, officeUpdateText } from '../officeUpdate';
@@ -258,6 +258,7 @@ function CeoTab() {
   const repos = useStore((s) => s.repos);
   const requests = useStore((s) => s.requests);
   const openOverlay = useStore((s) => s.openOverlay);
+  const ceoHarness = useStore((s) => s.settings.ceoHarness);
   const [text, setText] = useState('');
   const scroller = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -286,7 +287,7 @@ function CeoTab() {
             <StatusPill status={ceo.status} />
             <span className="spacer" />
             <ModelInput agent={ceo} style={{ maxWidth: 150 }} />
-            <EffortSelect agent={ceo} style={{ width: 'auto' }} />
+            {ceoHarness === 'claude' && <EffortSelect agent={ceo} style={{ width: 'auto' }} />}
           </div>
           <div className="small">
             <b>Now:</b> {working ? info.job?.label : 'free'}
@@ -620,7 +621,7 @@ function SettingsTab() {
         </label>
         <p className="muted small">
           {terminal
-            ? 'Each worker can use their own coding agent, model and effort (Team tab); the CEO always runs Claude Code. Claude Code reports every step; Codex and OpenCode are experimental: the office sees their task rather than each step.'
+            ? "Each worker can use their own coding agent, model and effort (Team tab); the CEO's harness is set under 🧠 The CEO below. Claude Code reports every step; Codex and OpenCode are experimental: the office sees their task rather than each step."
             : 'The Agent SDK runs Claude Code. Each worker can use their own model and effort (Team tab).'}
         </p>
         <label className="field">
@@ -644,6 +645,20 @@ function SettingsTab() {
         </label>
         <p className="muted small">When Claude warns that usage is getting high, new issues only start while fewer sessions than this are running. QA, fixes and the CEO carry on.</p>
         <h3>🧠 The CEO</h3>
+        <label className="field">
+          <span>Runs on</span>
+          <select value={settings.ceoHarness} onChange={(e) => set({ ceoHarness: e.target.value as CeoHarness })}>
+            {CEO_HARNESSES.map((h) => (
+              <option key={h.id} value={h.id}>
+                {h.label}
+                {h.id !== 'claude' ? ' (ACP)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        {settings.ceoHarness !== 'claude' && (
+          <p className="muted small">The CEO talks to {CEO_HARNESSES.find((h) => h.id === settings.ceoHarness)?.label} over ACP and calls the office's tools through a shell command. Its model (empty: the harness's own default) is on the CEO tab.</p>
+        )}
         <label className="toggle block">
           <input type="radio" checked={settings.hiring === 'approve'} onChange={() => set({ hiring: 'approve' })} />
           <span>

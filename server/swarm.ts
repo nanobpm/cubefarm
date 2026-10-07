@@ -6,6 +6,7 @@ import type { Backend } from './backend.ts';
 import type { LogEntry, SessionHandle, SessionResult } from './agentRunner.ts';
 import type { PrDetails } from './github.ts';
 import { defaultProjectsDir, DESK_SWEEP_INTERVAL_MS, HOME_DIR, LOG_BUFFER, SCHEDULER_INTERVAL_MS, STATE_FILE, SYNC_INTERVAL_MS, VERSION, WORKSPACE_ROOT } from './config.ts';
+import { officeCommand } from './acpRunner.ts';
 import { ceoJobPrompt, ceoSystemPrompt, checkCloseIssue, checkPendingLimit, createOfficeTools, FLOOR_DESKS, floorCapacity, IssueCap, jobLabel, MAX_PENDING_PROPOSALS, planRoute, seatCount, specialtyLabel, specialtySlug, type CeoJob, type OfficeTools } from './ceo.ts';
 import { afterClose, ASK_AGAIN_MS, closedWhy, closuresHeld, forgettable, issueOpen, nameList, pullNow, stillOpen, stoppedMessage, toAsk, toHold, type Closure, type FloorState, type KnownPull, type LearnedPull } from './closeCleanup.ts';
 import { depsPromptLine, type DepsOutcome } from './deps.ts';
@@ -55,8 +56,8 @@ import { parsePongResult, PONG_PLAYER, recordGame } from '../shared/pong.ts';
 import { effectiveModel } from '../shared/models.ts';
 import { DEFAULT_WEATHER, DEFAULT_WORLD_EVENTS, weatherSettings, worldEventSettings } from '../shared/outside.ts';
 import { DEFAULT_THEME_SETTINGS, dueGreeting, themeSettings } from '../shared/themes.ts';
-import { CEO_ID, DEFAULT_DOG_NAME, INSTALL_STEP } from '../shared/types.ts';
-import { NanoBridge, type NanoConfig } from './nano/bridge.ts';
+import { CEO_HARNESSES, CEO_ID, DEFAULT_DOG_NAME, INSTALL_STEP } from '../shared/types.ts';
+import { NanoBridge, nanoAgentEnv, type NanoConfig } from './nano/bridge.ts';
 import type { EngineApi, NanoApi } from './nano/client.ts';
 import type { ScreenLine } from './nano/mirror.ts';
 import { BENCH, type Floor, type Seat } from './nano/floors.ts';
@@ -69,6 +70,7 @@ import type {
   AgentStatus,
   AgentTask,
   AgentView,
+  CeoHarness,
   CeoInfo,
   CliView,
   ClientEvent,
@@ -194,6 +196,7 @@ interface CeoState {
   job: CeoJob | null; // the job the CEO is on right now
   lastReviewAt: number | null;
   lastFingerprint: string | null; // company state at the last review; unchanged means the next review is skipped
+  sessionHarness?: CeoHarness; // the harness the CEO's sessionId belongs to (absent: Claude Code)
 }
 
 /** An open issue whose PR was closed: auto-assign leaves it for the manager (closeCleanup.ts toHold). */
@@ -229,6 +232,8 @@ interface Shot {
 interface AgentRuntime {
   log: LogLine[];
   session: SessionHandle | null;
+  startingHarness?: CeoHarness | null; // the CEO harness that accepted this job, set before any await and cleared once the session installs or startup aborts: routing must follow it even before `session` exists
+  pendingStartupMessages?: string[]; // phone messages that arrived during the ACP startup window (session installing), delivered to it on install so a mid-startup "Runs on" switch can't let startCeoWork discard them
   currentTool: string | null;
   browserUrl: string | null;
   screenshot: { data: Buffer; mime: string; at: number } | null;
@@ -454,6 +459,23 @@ const ICON = { pass: '✅', fail: '❌', skip: '⏭️' } as const;
 
 export { HttpError };
 
+/**
+ * The CEO session-resume decision when a job starts. A chat resumes the last session only when the same harness
+ * still owns it; when ownership changes (the manager switched "Runs on"), the old harness's resumable id is stale
+ * and must be dropped (`clearStored`) before the new session starts — otherwise a new session that fails before
+ * its sessionId callback would leave that foreign id persisted under the new harness, and the next chat would send
+ * it to the wrong session/load.
+ */
+export function ceoResumeDecision(
+  jobKind: CeoJob['kind'],
+  ownedBy: CeoHarness,
+  harness: CeoHarness,
+  sessionId: string | null,
+): { resume: string | undefined; clearStored: boolean } {
+  const same = ownedBy === harness;
+  return { resume: jobKind === 'chat' && same ? (sessionId ?? undefined) : undefined, clearStored: !same };
+}
+
 export class Swarm {
   private state: Persisted = {
     settings: {
@@ -465,6 +487,7 @@ export class Swarm {
       hiring: 'approve',
       teamCap: 6,
       ceoHeartbeatMin: 60,
+      ceoHarness: 'claude',
       managerName: '',
       companyName: '',
       dogName: DEFAULT_DOG_NAME,
@@ -568,13 +591,17 @@ export class Swarm {
   /** nano mode (`--nano <url>`): nano-workforce runs the work, the office shows it. */
   private nano: NanoBridge | null = null;
   private nanoSeating = false;
+  private nanoEnv: Record<string, string> = {}; // NANO_WORKFORCE_URL / secret for an ACP CEO's fetched skill
   private toldStuck = new Set<string>(); // `${agentId}:${endedAt}`: agents in an error the manager was notified about
 
   constructor(
     private backend: Backend,
     nano?: { api: NanoApi; engine: EngineApi; config: NanoConfig },
   ) {
-    if (nano) this.nano = new NanoBridge(nano.api, nano.engine, this.nanoHost(), nano.config);
+    if (nano) {
+      this.nano = new NanoBridge(nano.api, nano.engine, this.nanoHost(), nano.config);
+      this.nanoEnv = nanoAgentEnv(nano.config);
+    }
     this.weather = new WeatherService({
       api: backend.weather,
       file: path.join(HOME_DIR, backend.demo ? 'demo-weather.json' : 'weather.json'),
@@ -686,6 +713,7 @@ export class Swarm {
       if (!EFFORTS.includes(this.state.settings.defaultEffort)) this.state.settings.defaultEffort = 'medium';
       if (this.state.settings.runtime !== 'sdk') this.state.settings.runtime = 'terminal';
       if (!isCli(this.state.settings.defaultCli)) this.state.settings.defaultCli = 'claude';
+      if (!CEO_HARNESSES.some((h) => h.id === this.state.settings.ceoHarness)) this.state.settings.ceoHarness = 'claude';
       this.state.settings.trimIdleDesksMin = clampTrimIdleMin(this.state.settings.trimIdleDesksMin);
       if (!this.state.settings.defaultModel && this.state.settings.defaultCli === 'claude') this.state.settings.defaultModel = DEFAULT_MODEL;
       // "Max concurrent sessions" (default 4) became an optional session limit. The old default goes; a limit the manager chose stays.
@@ -960,6 +988,9 @@ export class Swarm {
 
   private agentView(a: PersistedAgent, withLog: boolean): AgentView {
     const rt = this.agentRt.get(a.id)!;
+    // While a CEO session is live, terminal visibility follows the harness that owns the session, not the
+    // mutable "Runs on" setting: switching it mid-session must not hide a running terminal or reveal a stale one.
+    const ceoHarness = a.role === 'ceo' ? this.ceoActiveHarness() : this.state.settings.ceoHarness;
     return {
       id: a.id,
       name: a.name,
@@ -979,7 +1010,7 @@ export class Swarm {
       model: a.model,
       effort: a.effort,
       cli: a.cli,
-      terminal: !!rt.terminal,
+      terminal: !!rt.terminal && !(a.role === 'ceo' && ceoHarness !== 'claude'), // an ACP CEO's steps are its log
       status: a.status,
       issueNumber: a.issueNumber,
       issueTitle: a.issueTitle,
@@ -1222,7 +1253,7 @@ export class Swarm {
   }
 
   private running() {
-    return this.state.agents.filter((a) => BUSY.includes(a.status)).length;
+    return this.state.agents.filter((a) => BUSY.includes(a.status) && !a.nanoWorker).length;
   }
 
   /** True when the manager has set a session limit and every slot is taken. */
@@ -2265,7 +2296,7 @@ export class Swarm {
   /** What an agent is told on a task, previewed with placeholders for the task's details. */
   agentPrompt(id: string): AgentPromptView {
     const a = this.agent(id);
-    if (a.role === 'ceo') return ceoPromptPreview(ceoSystemPrompt(this.ceoPromptInput(a)));
+    if (a.role === 'ceo') return ceoPromptPreview(ceoSystemPrompt(this.ceoPromptInput(a, this.ceoActiveHarness(), undefined, true)));
     const repo = this.repo(a.repoId);
     const base = { agent: a, repo, port: this.port(a), slug: slugify(a.name) };
     return a.role === 'qa' ? qaPromptPreview(base) : devPromptPreview({ ...base, linked: this.linkedDirs(repo) });
@@ -2482,6 +2513,7 @@ export class Swarm {
         sessionId: (id) => {
           a.sessionId = id;
           a.sessionCli = id ? (how.cli ?? 'claude') : null;
+          this.save(); // persist the resumable id: it arrives after the pre-startup save, so a crash would lose it
         },
         browserUrl: (url) => {
           rt.browserUrl = url;
@@ -3147,6 +3179,13 @@ export class Swarm {
     if (patch.runtime === 'terminal' || patch.runtime === 'sdk') s.runtime = patch.runtime;
     if (patch.hiring === 'approve' || patch.hiring === 'auto') s.hiring = patch.hiring;
     if (patch.teamCap !== undefined) s.teamCap = Math.max(1, Math.min(15, Math.round(Number(patch.teamCap)) || 1));
+    if (patch.ceoHarness !== undefined && patch.ceoHarness !== s.ceoHarness && CEO_HARNESSES.some((h) => h.id === patch.ceoHarness)) {
+      s.ceoHarness = patch.ceoHarness;
+      // Its model belongs to the harness: Claude's names mean nothing to the others, which start on their own default.
+      const ceo = this.ceo();
+      ceo.model = s.ceoHarness === 'claude' ? CEO_MODEL : '';
+      this.emitAgent(ceo);
+    }
     if (patch.ceoHeartbeatMin !== undefined) s.ceoHeartbeatMin = Math.max(0, Math.min(1440, Math.round(Number(patch.ceoHeartbeatMin)) || 0));
     if (typeof patch.managerName === 'string') s.managerName = patch.managerName.trim().slice(0, 40);
     if (typeof patch.companyName === 'string') s.companyName = patch.companyName.trim().slice(0, 60);
@@ -3480,7 +3519,8 @@ export class Swarm {
    */
   private schedule() {
     if (this.nano) {
-      this.progressTick(); // nano-workforce does the work: nothing to start here
+      this.progressTick(); // nano-workforce does the work: nothing to start here but the CEO's replies
+      this.startCeoWork();
       return;
     }
     this.tickUsage();
@@ -3646,6 +3686,19 @@ export class Swarm {
     return this.state.agents.find((a) => a.id === CEO_ID)!;
   }
 
+  /**
+   * The harness that owns the CEO right now: while a session is live it belongs to `sessionHarness`,
+   * so routing (terminal visibility, nano-vs-CEO phone replies) must follow that, not the mutable
+   * "Runs on" setting; only once no session runs does the setting take over.
+   */
+  private ceoActiveHarness(): CeoHarness {
+    const rt = this.agentRt.get(CEO_ID);
+    if (rt?.session) return this.state.ceo.sessionHarness ?? 'claude';
+    // Between accepting a job and installing its session, `session` is still null but the job already owns a
+    // harness; route by it so a mid-startup "Runs on" change can't misroute the phone to the wrong CEO.
+    return rt?.startingHarness ?? this.state.settings.ceoHarness;
+  }
+
   /** The company always has a CEO. One cut off by a server restart picks its job back up. */
   private ensureCeo(interrupted: PersistedAgent[]) {
     let a = this.state.agents.find((x) => x.id === CEO_ID);
@@ -3705,7 +3758,7 @@ export class Swarm {
   private ceoFloor(repoId?: string) {
     const repo = repoId ? this.state.repos.find((r) => r.id === repoId) : undefined;
     if (!repo) return null;
-    return { floor: repo.floor, fullName: repo.fullName, clone: this.backend.mainDir(repo.fullName), mission: repo.mission, backlog: this.repoRt.get(repo.id)?.issues.length ?? 0 };
+    return { floor: repo.floor, fullName: repo.fullName, clone: this.nano ? null : this.backend.mainDir(repo.fullName), mission: repo.mission, backlog: this.repoRt.get(repo.id)?.issues.length ?? 0 };
   }
 
   private ceoInfo(): CeoInfo {
@@ -3726,7 +3779,7 @@ export class Swarm {
 
   /** Queue a job for the CEO: one onboarding or plan per floor, one review, and chat messages merge into one reply. */
   private enqueueCeo(job: CeoJob) {
-    if (this.nano) return; // no CEO sessions in nano mode: nano-workforce plans the work
+    if (this.nano && (job.kind !== 'chat' || !this.nanoCeo())) return; // nano-workforce plans the work; an ACP CEO answers the manager
     const q = this.state.ceo.queue;
     if (job.kind === 'plan' && q.some((j) => j.kind === 'onboard' && j.repoId === job.repoId)) return; // onboarding plans from the brief too
     const same = q.findIndex((j) => j.kind === job.kind && (job.kind === 'review' || job.kind === 'chat' || (j.repoId === job.repoId && j.prNumber === job.prNumber)));
@@ -3745,6 +3798,13 @@ export class Swarm {
     const stale = c.queue.filter((j) => j.kind === 'triage' && !this.stuckRecord(j));
     if (stale.length) {
       c.queue = c.queue.filter((j) => !stale.includes(j));
+      this.emitCeo();
+      this.save();
+    }
+    // A chat queued for an ACP CEO is stale once "Runs on" is Claude again: enqueueCeo only vets new jobs, so
+    // re-check here or runCeoJob would launch it as Claude and the nano backend would answer with the scripted demo.
+    if (this.nano && !this.nanoCeo() && c.queue.some((j) => j.kind === 'chat')) {
+      c.queue = c.queue.filter((j) => j.kind !== 'chat');
       this.emitCeo();
       this.save();
     }
@@ -3770,9 +3830,35 @@ export class Swarm {
     void this.runCeoJob(a, job);
   }
 
-  private ceoPromptInput(a: PersistedAgent): Parameters<typeof ceoSystemPrompt>[0] {
+  private ceoPromptInput(a: PersistedAgent, harness: CeoHarness, nanoSkill?: string, preview = false): Parameters<typeof ceoSystemPrompt>[0] {
     const s = this.state.settings;
-    return { name: a.name, company: s.companyName, manager: s.managerName, notesFile: path.join(CEO_DIR, 'NOTES.md'), sessionLimit: s.sessionLimit, teamCap: s.teamCap, hiring: s.hiring };
+    return {
+      name: a.name,
+      company: s.companyName,
+      manager: s.managerName,
+      notesFile: path.join(CEO_DIR, 'NOTES.md'),
+      sessionLimit: s.sessionLimit,
+      teamCap: s.teamCap,
+      hiring: s.hiring,
+      ...(harness !== 'claude' ? { shellTools: { command: officeCommand(), catalog: this.officeTools().catalog() } } : {}),
+      ...(this.nano ? { nano: true } : {}),
+      ...(nanoSkill ? { nanoSkill } : {}),
+      // The preview renders before a session fetches the runtime skill: mark it pending so the preview shows the
+      // skill as forthcoming rather than as a load failure. Never set in a real run, where a missing skill is a
+      // genuine fetch failure that must keep its fallback wording.
+      ...(preview && this.nano && !nanoSkill ? { nanoSkillPending: true } : {}),
+    };
+  }
+
+  /** nano-workforce's agent skill for the CEO's instructions (--nano); null when it can't be had right now. */
+  private async ceoNanoSkill(a: PersistedAgent): Promise<string | undefined> {
+    if (!this.nano) return undefined;
+    try {
+      return await this.nano.agentSkill();
+    } catch (err) {
+      this.appendLog(a, [{ kind: 'error', text: `Couldn't fetch nano-workforce's agent skill: ${oneLine(err)}` }]);
+      return undefined;
+    }
   }
 
   private async runCeoJob(a: PersistedAgent, job: CeoJob) {
@@ -3794,28 +3880,54 @@ export class Swarm {
     this.emitAgent(a);
     this.emitCeo();
     this.save();
+    // Capture the harness and model when the job is accepted, before any await: a setting change landing while
+    // one is pending (which resets a.model and the prompt mode via updateSettings) must not misroute or
+    // misconfigure this session — it belongs to the harness that accepted it.
+    const harness = this.state.settings.ceoHarness;
+    const model = harness === 'claude' ? a.model || CEO_MODEL : a.model;
+    rt.startingHarness = harness; // own the harness through the awaits below, before `session` exists, so routing can't follow a mid-startup "Runs on" change
     await fs.mkdir(CEO_DIR, { recursive: true }).catch(() => undefined);
     const triage = job.kind === 'triage' ? await this.triagePr(job) : null;
+    const nanoSkill = await this.ceoNanoSkill(a);
     if (a.status !== 'working') {
       // stopped before the session started
+      rt.startingHarness = null;
+      const pending = rt.pendingStartupMessages;
+      rt.pendingStartupMessages = undefined;
       this.state.ceo.job = null;
       if (job.kind === 'triage') this.endTriage(job);
+      // The session never installed, so buffered phone messages have no live handle to receive them: re-queue
+      // them (startCeoWork re-validates against the current harness) rather than dropping them silently.
+      for (const text of pending ?? []) this.enqueueCeo({ kind: 'chat', text, at: Date.now() });
       this.emitCeo();
       return;
     }
     // A chat carries on from the CEO's last session, so "why did you propose that?" has an answer.
-    const how = this.sessionRuntime(a, job.kind === 'chat' ? (a.sessionId ?? undefined) : undefined);
+    const ownedBy = this.state.ceo.sessionHarness ?? 'claude';
+    const { resume, clearStored } = ceoResumeDecision(job.kind, ownedBy, harness, a.sessionId);
+    const how = harness === 'claude' ? this.sessionRuntime(a, resume) : { acp: harness, resumeSessionId: resume };
+    if (clearStored) {
+      // Ownership changes: drop the old harness's resumable id now. If the new session fails before its
+      // sessionId callback, leaving it would persist a foreign id under the new harness (onCeoFinished saves
+      // sessionHarness + sessionId together), and the next chat would send it to the wrong session/load.
+      a.sessionId = null;
+      a.sessionCli = null;
+    }
+    this.state.ceo.sessionHarness = harness; // the harness that owns this session; the terminal flag follows it, not the setting
     rt.session = this.backend.startSession(
       {
         cwd: CEO_DIR,
         prompt: ceoJobPrompt(job, floor, triage),
-        systemAppend: ceoSystemPrompt(this.ceoPromptInput(a)),
-        model: a.model || CEO_MODEL,
+        systemAppend: ceoSystemPrompt(this.ceoPromptInput(a, harness, nanoSkill)),
+        model,
         effort: a.effort || CEO_EFFORT,
         browserTesting: false,
-        additionalDirectories: this.state.repos.filter((r) => this.repoRt.get(r.id)?.cloneStatus === 'ready').map((r) => this.backend.mainDir(r.fullName)),
+        // Nano mode clones nothing (its backend's mainDir is a /demo/... stand-in and ensureClone is a no-op), so
+        // there are no reference clones to hand the harness — advertising them would name roots that don't exist.
+        additionalDirectories: this.nano ? [] : this.state.repos.filter((r) => this.repoRt.get(r.id)?.cloneStatus === 'ready').map((r) => this.backend.mainDir(r.fullName)),
         role: 'ceo',
         office: this.officeTools(),
+        ...(this.nano && harness !== 'claude' ? { sessionEnv: this.nanoEnv } : {}),
         ...how,
       },
       {
@@ -3827,7 +3939,8 @@ export class Swarm {
         },
         sessionId: (id) => {
           a.sessionId = id;
-          a.sessionCli = id ? 'claude' : null;
+          a.sessionCli = id && harness === 'claude' ? 'claude' : null;
+          this.save(); // persist the resumable id (and the sessionHarness set above): it arrives after the pre-startup save
         },
         browserUrl: () => undefined,
         screenshot: () => undefined,
@@ -3837,6 +3950,19 @@ export class Swarm {
         finished: (result) => this.onCeoFinished(a, result),
       },
     );
+    rt.startingHarness = null; // the session now owns routing via `sessionHarness`; drop the startup marker so it can't go stale after the session ends
+    this.deliverStartupMessages(rt); // hand the live session any phone messages buffered while it was installing
+  }
+
+  /** Deliver phone messages buffered during the ACP startup window to the now-installed session. */
+  private deliverStartupMessages(rt: AgentRuntime) {
+    const pending = rt.pendingStartupMessages;
+    rt.pendingStartupMessages = undefined;
+    if (!pending?.length || !rt.session) return;
+    for (const text of pending) {
+      this.ceoIssues.managerMessage(); // each buffered message is a fresh request: the issue cap counts from here
+      rt.session.send(`Message from the manager (they read your reply on their phone, so keep it short):\n${text}`);
+    }
   }
 
   private onCeoFinished(a: PersistedAgent, result: SessionResult) {
@@ -3876,14 +4002,21 @@ export class Swarm {
   async messageCeo(text: string) {
     const t = text.trim().slice(0, 4000);
     if (!t) throw new HttpError(400, 'Empty message');
-    if (this.nano) return this.messageNano(t);
+    if (this.nano && (await this.messageNano(t))) return;
     const a = this.ceo();
-    this.postMessage('manager', t);
+    if (!this.nano) this.postMessage('manager', t);
     const rt = this.agentRt.get(a.id)!;
     if (rt.session) {
       this.appendLog(a, [{ kind: 'manager', text: `▶ Manager: ${t}` }]);
       this.ceoIssues.managerMessage(); // a new request: the issue cap counts from here
       rt.session.send(`Message from the manager (they read your reply on their phone, so keep it short):\n${t}`);
+      return;
+    }
+    if (rt.startingHarness) {
+      // A session is installing (the ACP startup window): buffer the message for it rather than queueing, so a
+      // mid-startup "Runs on" switch to Claude can't let startCeoWork discard the queued chat before it lands.
+      this.appendLog(a, [{ kind: 'manager', text: `▶ Manager: ${t}` }]);
+      (rt.pendingStartupMessages ??= []).push(t);
       return;
     }
     this.enqueueCeo({ kind: 'chat', text: t, at: Date.now() });
@@ -4490,6 +4623,7 @@ export class Swarm {
       },
       phone: (text: string) => void this.postMessage('office', text),
       needsHuman: (title: string, body: string) => this.notifier.notify('needsHuman', title, body, title),
+      workers: () => this.state.agents.filter((a) => a.nanoWorker).map((a) => a.nanoWorker as string),
     };
   }
 
@@ -4570,7 +4704,13 @@ export class Swarm {
   }
 
   /** The manager's phone in nano mode: answers to escalations, "status", or how to use it. */
-  private async messageNano(t: string) {
+  /** Nano mode has a CEO only on an ACP harness: its sessions are the only real ones here (nano/backend.ts). */
+  private nanoCeo() {
+    return this.ceoActiveHarness() !== 'claude';
+  }
+
+  /** A nano command (`status`, `answer …`, `start …`) answered on the phone; false: it's for the CEO. */
+  private async messageNano(t: string): Promise<boolean> {
     this.postMessage('manager', t);
     let reply: string | null;
     try {
@@ -4578,12 +4718,11 @@ export class Swarm {
     } catch (err) {
       reply = `❌ ${(err as Error).message}`;
     }
-    if (reply === null) {
-      reply = /^\s*status\b/i.test(t)
-        ? this.nano!.summary()
-        : 'nano-workforce runs the work here: every floor is one of its running processes. Text `status` for what\'s in flight, `answer <id> …` to answer an escalation, or `start owner/repo#123` to hand it an issue.';
-    }
+    if (reply === null && /^\s*status\b/i.test(t)) reply = this.nano!.summary();
+    if (reply === null && this.nanoCeo()) return false;
+    reply ??= 'nano-workforce runs the work here: every floor is one of its running processes. Text `status` for what\'s in flight, `answer <id> …` to answer an escalation, or `start owner/repo#123` to hand it an issue. To talk it over with the CEO, set the CEO to run on nano-coder or Copilot (Settings).';
     this.postMessage('ceo', reply);
+    return true;
   }
 
   private postMessage(from: PhoneMessage['from'], text: string, requestId?: string) {
@@ -4823,7 +4962,9 @@ export class Swarm {
           floor: r.floor,
           repo: r.fullName,
           description: r.description,
-          clone: rt.cloneStatus === 'ready' ? this.backend.mainDir(r.fullName) : `(not available: clone ${rt.cloneStatus})`,
+          // Nano mode keeps no repository clones (its backend's mainDir is a /demo/... stand-in that ensureClone never
+          // creates), so report none rather than a path the CEO would try to Read and fail on.
+          clone: this.nano ? null : rt.cloneStatus === 'ready' ? this.backend.mainDir(r.fullName) : `(not available: clone ${rt.cloneStatus})`,
           brief: r.mission || null,
           profile: r.summary || null,
           qaBrief: r.qaBrief || null,
@@ -4922,9 +5063,12 @@ export class Swarm {
         doing: this.agentDoing(a),
         issue: a.issueNumber ? { number: a.issueNumber, title: a.issueTitle } : null,
         pullRequest: a.prNumber ? { number: a.prNumber, url: a.prUrl } : null,
-        codingAgent: ceo ? 'claude' : a.cli || this.state.settings.defaultCli,
-        model: ceo ? a.model || CEO_MODEL : this.modelFor(a, a.cli || this.state.settings.defaultCli) || 'the coding agent default',
-        effort: a.effort || (ceo ? CEO_EFFORT : this.state.settings.defaultEffort),
+        codingAgent: ceo ? this.state.settings.ceoHarness : a.cli || this.state.settings.defaultCli,
+        // An ACP CEO's empty model means the harness's own default; Claude's name would be wrong for it. Effort is
+        // likewise Claude-only for the CEO: ACP sessions ignore it (acpArgs passes no effort), so report the stored
+        // value. A dev/QA agent's empty effort still means the office default, as sessions start with it.
+        model: ceo ? a.model || (this.state.settings.ceoHarness === 'claude' ? CEO_MODEL : 'the harness default') : this.modelFor(a, a.cli || this.state.settings.defaultCli) || 'the coding agent default',
+        effort: a.effort || (ceo ? (this.state.settings.ceoHarness === 'claude' ? CEO_EFFORT : '') : this.state.settings.defaultEffort),
         hiredBy: a.hiredBy,
         jobDescription: a.brief || null,
       },

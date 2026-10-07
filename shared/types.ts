@@ -217,8 +217,15 @@ export type AgentTask = 'issue' | 'qa' | 'fix';
  */
 export type AgentRuntime = 'terminal' | 'sdk';
 
-/** The coding-agent CLI an agent runs in its terminal. The CEO is always Claude Code. */
+/** The coding-agent CLI a worker runs in its terminal. The CEO's harness is CeoHarness, not this. */
 export type AgentCli = 'claude' | 'codex' | 'opencode';
+/** What the CEO runs on: Claude Code, or a coding agent spoken to over ACP (Agent Client Protocol, `<cli> --acp`). */
+export type CeoHarness = 'claude' | 'nano-coder' | 'copilot';
+export const CEO_HARNESSES: { id: CeoHarness; label: string }[] = [
+  { id: 'claude', label: 'Claude Code' },
+  { id: 'nano-coder', label: 'nano-coder' },
+  { id: 'copilot', label: 'GitHub Copilot CLI' },
+];
 
 /** A coding-agent CLI the office knows how to run, and whether it's installed on this machine. */
 export interface CliView {
@@ -361,6 +368,7 @@ export interface SwarmSettings {
   hiring: 'approve' | 'auto'; // CEO proposals wait for the manager, or go through while the floor is under teamCap
   teamCap: number; // most agents per floor the CEO may reach without the manager's approval (auto mode)
   ceoHeartbeatMin: number; // minutes between the CEO's periodic reviews; 0 = off
+  ceoHarness: CeoHarness; // what the CEO runs on (its model, '' = the harness's own default, is on the CEO tab)
   managerName: string; // what the office calls you
   companyName: string;
   dogName: string; // the office dog's name, on its tag and in the hint when you aim at it

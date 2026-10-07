@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { NanoBridge, type NanoHost } from './bridge.ts';
+import { NanoBridge, nanoAgentEnv, type NanoHost } from './bridge.ts';
 import type { EngineApi, EngineInstance, EngineJob, NanoApi, NanoEscalation, NanoPr, NanoSupply } from './client.ts';
 import { engineClient, nanoClient } from './client.ts';
 import { BENCH, buildWorld, parseProcess, type ProcessModel } from './floors.ts';
@@ -141,6 +141,58 @@ describe('mirror', () => {
     expect(w.floors[1].issues[0]).toMatchObject({ number: 2251799813690001, labels: ['needs-human', 'plan-review'] });
   });
 
+  it('suppresses only the user task that has an escalation, not every human step', () => {
+    const w = world({
+      prs: [],
+      instances: [inst('500')],
+      jobs: [],
+      escalations: [esc({ processKey: '500', userTaskKey: '501', subjectTitle: 'Approve A' })],
+      elements: new Map([
+        [
+          '500',
+          [
+            { elementInstanceKey: '501', processInstanceKey: '500', elementId: 'merge-approval', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' },
+            { elementInstanceKey: '502', processInstanceKey: '500', elementId: 'merge-approval', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' },
+          ],
+        ],
+      ]),
+    });
+    const titles = w.floors[0].issues.map((i) => i.title);
+    expect(titles.filter((t) => t.startsWith('🙋')).length).toBe(1); // ut 502 only; ut 501's escalation sticky replaces its 🙋
+    expect(titles.some((t) => t.startsWith('🚨'))).toBe(true);
+  });
+
+  it('marks a user-task shape as an escalation only when the escalation is its own', () => {
+    const XML2 = `<?xml version="1.0"?><bpmn:definitions><bpmn:process id="two-humans">
+      <bpmn:userTask id="approve-a" name="Approve A" />
+      <bpmn:userTask id="approve-b" name="Approve B" />
+    </bpmn:process><bpmndi:BPMNDiagram><bpmndi:BPMNPlane>
+      <bpmndi:BPMNShape id="sa" bpmnElement="approve-a"><dc:Bounds x="10" y="10" width="80" height="60" /></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="sb" bpmnElement="approve-b"><dc:Bounds x="120" y="10" width="80" height="60" /></bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane></bpmndi:BPMNDiagram></bpmn:definitions>`;
+    const w = world({
+      prs: [],
+      instances: [inst('600', { processDefinitionKey: 'd3', processDefinitionId: 'two-humans' })],
+      jobs: [],
+      escalations: [esc({ processKey: '600', userTaskKey: '601', subjectTitle: 'Approve A' })],
+      elements: new Map([
+        [
+          '600',
+          [
+            { elementInstanceKey: '601', processInstanceKey: '600', elementId: 'approve-a', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' },
+            { elementInstanceKey: '602', processInstanceKey: '600', elementId: 'approve-b', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' },
+          ],
+        ],
+      ]),
+      models: new Map<string, ProcessModel>([['d3', parseProcess(XML2)]]),
+    });
+    const b = w.floors[0].board;
+    if (b.kind !== 'process') throw new Error('not a process board');
+    const by = Object.fromEntries(b.shapes.map((s) => [s.id, s]));
+    expect(by['approve-a']).toMatchObject({ waiting: 'escalation' });
+    expect(by['approve-b']).toMatchObject({ waiting: 'human' }); // a different user task's escalation must not bleed onto it
+  });
+
   it('seats workers at the desk of their step, on the root floor; idle ones on the bench', () => {
     const w = world();
     expect(w.seats[0]).toMatchObject({ instance: 'w1', floorId: 'convergence-loop/app-pr45', desk: 0, doing: 'Review round', task: 'fix', prNumber: 45, stream: 'job:j1' });
@@ -244,6 +296,15 @@ describe('client', () => {
     expect((init.headers as Record<string, string>)['x-hook-secret']).toBe('s');
   });
 
+  it("sends Basic Auth and reads the agent skill", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ format: 'markdown', skill: '# skill' }), { status: 200 }));
+    const c = nanoClient('http://merlin.local:3000', { auth: 'Basic dTpw', fetch: f as unknown as typeof fetch });
+    expect(await c.agentSkill()).toBe('# skill');
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('http://merlin.local:3000/app/api/agent/skill');
+    expect((init.headers as Record<string, string>).authorization).toBe('Basic dTpw');
+  });
+
   it('reports errors', async () => {
     const f = vi.fn(async () => new Response(JSON.stringify({ error: 'bad base' }), { status: 400 }));
     const c = nanoClient('http://h', { fetch: f as unknown as typeof fetch });
@@ -268,7 +329,7 @@ describe('engine client', () => {
 });
 
 describe('bridge', () => {
-  const setup = (over: Partial<NanoApi> = {}) => {
+  const setup = (over: Partial<NanoApi> = {}, engineOver: Partial<EngineApi> = {}) => {
     const api: NanoApi = {
       supply: async () => supply,
       activePrs: async () => [pr({ processKey: '100' })],
@@ -276,6 +337,7 @@ describe('bridge', () => {
       transcript: async (stream, from) => (stream === 'job:j1' && from === 0 ? { status: 'open', nextOffset: 3, entries: [{ offset: 0, chunk: 'hello\nworld\n' }] } : null),
       startPlanFanout: vi.fn(async () => ({})),
       completeUserTask: vi.fn(async () => ({})),
+      agentSkill: async () => '# skill',
       ...over,
     };
     const engine: EngineApi = {
@@ -283,8 +345,9 @@ describe('bridge', () => {
       activeJobs: async () => jobs,
       elements: async () => [],
       processXml: vi.fn(async () => XML),
+      ...engineOver,
     };
-    const host = { floors: vi.fn(async () => undefined), seat: vi.fn(), unseat: vi.fn(), log: vi.fn(), phone: vi.fn(), needsHuman: vi.fn() } satisfies NanoHost;
+    const host = { floors: vi.fn(async () => undefined), seat: vi.fn(), unseat: vi.fn(), log: vi.fn(), phone: vi.fn(), needsHuman: vi.fn(), workers: vi.fn((): string[] => []) } satisfies NanoHost;
     const bridge = new NanoBridge(api, engine, host, { url: 'http://nwf', pollMs: 1000, baseBranch: '' });
     return { api, engine, host, bridge };
   };
@@ -309,6 +372,135 @@ describe('bridge', () => {
     s = { workers: supply.workers.slice(1) };
     await bridge.tick();
     expect(host.unseat).toHaveBeenCalledWith('w1');
+  });
+
+  it('flushes and forgets a departed worker\u2019s stream, not only ones still seated', async () => {
+    // The leak: a worker that vanishes is unseated, but its reader/offset/following entry lived on and its last
+    // buffered line was dropped (the flush only ran for workers still in `seats`). An assistant message with no
+    // trailing newline stays buffered until the stream ends — on departure it must be flushed, not lost.
+    let s = supply;
+    const buffered = JSON.stringify({ nwfTranscriptEvent: 1, kind: 'message', role: 'assistant', text: 'tail' });
+    const { host, bridge } = setup({
+      supply: async () => s,
+      transcript: async (stream, from) => (stream === 'job:j1' && from === 0 ? { status: 'open', nextOffset: 1, entries: [{ offset: 0, chunk: buffered }] } : null),
+    });
+    await bridge.tick();
+    expect(host.log).not.toHaveBeenCalledWith('w1', expect.anything()); // still buffered, nothing emitted yet
+    s = { workers: supply.workers.slice(1) };
+    await bridge.tick();
+    expect(host.unseat).toHaveBeenCalledWith('w1');
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'tail' }]);
+  });
+
+  it('flushes a departed worker’s tail before unseating it (the real host drops logs for a removed worker)', async () => {
+    // The office's unseat fires the worker, so a flush after it logs to nobody. Record the host's call order:
+    // the tail must already be logged when unseat runs.
+    let s = supply;
+    const order: string[] = [];
+    const buffered = JSON.stringify({ nwfTranscriptEvent: 1, kind: 'message', role: 'assistant', text: 'tail' });
+    const { host, bridge } = setup({
+      supply: async () => s,
+      transcript: async (stream, from) => (stream === 'job:j1' && from === 0 ? { status: 'open', nextOffset: 1, entries: [{ offset: 0, chunk: buffered }] } : null),
+    });
+    host.unseat.mockImplementation((instance: string) => void order.push(`unseat ${instance}`));
+    host.log.mockImplementation((instance: string) => void order.push(`log ${instance}`));
+    await bridge.tick();
+    s = { workers: supply.workers.slice(1) };
+    await bridge.tick();
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'tail' }]);
+    expect(order.indexOf('log w1')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('log w1')).toBeLessThan(order.indexOf('unseat w1'));
+  });
+
+  it('fetches a departed worker’s post-poll entries before unseating, not only its buffer', async () => {
+    // The class: on departure the stream is forgotten, but the follow pass only visits current seats, so any
+    // transcript entries written since the last poll (not yet in the local reader) would never be fetched and
+    // the worker's final output is lost. The departure path must fetch once more before ending the stream.
+    let s = supply;
+    const line = (t: string) => JSON.stringify({ nwfTranscriptEvent: 1, kind: 'message', role: 'assistant', text: t + '\n' });
+    const { host, bridge } = setup({
+      supply: async () => s,
+      transcript: async (stream, from) =>
+        stream !== 'job:j1'
+          ? null
+          : from === 0
+            ? { status: 'open', nextOffset: 1, entries: [{ offset: 0, chunk: line('first') }] }
+            : from === 1
+              ? { status: 'open', nextOffset: 2, entries: [{ offset: 1, chunk: line('second') }] }
+              : null,
+    });
+    await bridge.tick();
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'first' }]);
+    s = { workers: supply.workers.slice(1) };
+    await bridge.tick();
+    expect(host.unseat).toHaveBeenCalledWith('w1');
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'second' }]); // the post-poll entry, not lost
+  });
+
+  it('flushes departed workers concurrently, so one slow transcript can’t stall the rest', async () => {
+    // The class: a serial await per departed worker makes one poll take up to workerCount × the transcript
+    // timeout, freezing every floor/seat/escalation update during a mass departure. The flushes must overlap.
+    let s = supply;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let departing = false;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const tail = JSON.stringify({ nwfTranscriptEvent: 1, kind: 'message', role: 'assistant', text: 'bye' });
+    const { host, bridge } = setup({
+      supply: async () => s,
+      transcript: async (stream) => {
+        if (departing && (stream === 'job:j1' || stream === 'job:j3')) {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await gate;
+          inFlight--;
+          return { status: 'open', nextOffset: 1, entries: [{ offset: 0, chunk: tail }] };
+        }
+        return null;
+      },
+    });
+    await bridge.tick(); // seats w1 (job:j1) and w3 (job:j3), both now followed
+    departing = true;
+    s = { workers: [] }; // everyone leaves at once
+    const t = bridge.tick();
+    await new Promise((r) => setTimeout(r, 0)); // let both departed flushes start before releasing
+    release();
+    await t;
+    expect(maxInFlight).toBe(2); // both transcript fetches in flight together — serial would cap at 1
+    expect(host.unseat).toHaveBeenCalledWith('w1');
+    expect(host.unseat).toHaveBeenCalledWith('w3');
+    expect(host.log).toHaveBeenCalledWith('w1', [{ kind: 'text', text: 'bye' }]);
+    expect(host.log).toHaveBeenCalledWith('w3', [{ kind: 'text', text: 'bye' }]);
+  });
+
+  it('unseats a persisted worker the supply never reports (ghost desk after a restart)', async () => {
+    // The office kept 'wGhost' at a desk across a restart, but it is gone from nano-workforce. This bridge process
+    // never saw it seated, so only reconciling against the host's persisted workers clears it.
+    const { host, bridge } = setup();
+    host.workers.mockReturnValue(['wGhost']);
+    await bridge.tick();
+    expect(host.unseat).toHaveBeenCalledWith('wGhost');
+  });
+
+  it('keys a child instance\u2019s elements under its root process (call activities on the root floor)', async () => {
+    const roots = [
+      inst('200', { processDefinitionId: 'delivery-graph-54bde3dae2fa', processDefinitionKey: 'd2' }),
+      inst('300', { processDefinitionId: 'delivery-graph-54bde3dae2fa', processDefinitionKey: 'd2', parentProcessInstanceKey: '200' }),
+    ];
+    const { host, bridge } = setup(
+      { supply: async () => ({ workers: [] }), activePrs: async () => [], escalations: async () => [] },
+      {
+        activeInstances: async () => roots,
+        activeJobs: async () => [],
+        // The waiting user task lives on the child instance 300; it must surface on root 200's floor.
+        elements: async (key) => (key === '300' ? [{ elementInstanceKey: '900', processInstanceKey: '300', elementId: 'merge-approval', type: 'USER_TASK', state: 'ACTIVE', startDate: '2026-10-06T00:00:00Z' }] : []),
+      },
+    );
+    await bridge.tick();
+    const floors = (host.floors.mock.calls[0] as unknown as [{ id: string; issues: { title: string }[] }[]])[0];
+    const dg = floors.find((f) => f.id.startsWith('delivery-graph'));
+    expect(dg?.issues.some((i) => i.title.includes('Approve merge'))).toBe(true);
   });
 
   it('starts an issue from a text: default branch with confirmation, or a templated base', async () => {
@@ -346,5 +538,24 @@ describe('bridge', () => {
     const texts = host.phone.mock.calls.map((c) => c[0] as string);
     expect(texts.filter((t) => t.includes("Can't reach"))).toHaveLength(1);
     expect(texts.some((t) => t.includes('reachable again'))).toBe(true);
+  });
+});
+
+describe('nanoAgentEnv', () => {
+  it('exposes the url and secret under the names an ACP CEO\u2019s skill reads', () => {
+    expect(nanoAgentEnv({ url: 'http://nwf:3000', secret: 's3cr3t' })).toEqual({ NANO_WORKFORCE_URL: 'http://nwf:3000', NANO_PR_WEBHOOK_SECRET: 's3cr3t' });
+  });
+
+  it('embeds Basic auth back into the url userinfo and omits a missing secret', () => {
+    const auth = `Basic ${Buffer.from('user:pass').toString('base64')}`;
+    const env = nanoAgentEnv({ url: 'http://nwf:3000', auth });
+    const u = new URL(env.NANO_WORKFORCE_URL);
+    expect(u.username).toBe('user');
+    expect(u.password).toBe('pass');
+    expect(env.NANO_PR_WEBHOOK_SECRET).toBeUndefined();
+  });
+
+  it('leaves the url plain when there is no auth', () => {
+    expect(nanoAgentEnv({ url: 'http://nwf:3000' })).toEqual({ NANO_WORKFORCE_URL: 'http://nwf:3000' });
   });
 });

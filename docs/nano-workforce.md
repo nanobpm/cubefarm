@@ -2,8 +2,10 @@
 
 `npx cubefarm --nano http://localhost:3000` (or `CUBEFARM_NANO_URL`) runs the office as an interface to a
 [nano-workforce](https://github.com/nanobpm/nano-workforce) app. nano-workforce plans, implements, reviews and
-merges; the office shows that work and drives it. Its own orchestrator stands down: no CEO sessions, no QA lab, no
-local agent sessions, no auto-assign.
+merges; the office shows that work and drives it. Its own orchestrator stands down: no QA lab, no local agent
+sessions, no auto-assign. With `--nano` an optional ACP CEO (nano-coder or Copilot) still runs for the manager's chat
+(see below); with Claude Code there is no CEO session. Under `--demo` the CEO stays the demo's scripted one — an ACP
+harness chat is faked by the demo, never a real ACP session.
 
 | In the office | From / to nano-workforce |
 | --- | --- |
@@ -15,7 +17,9 @@ local agent sessions, no auto-assign.
 | Texting `answer <id> [choice] note` | `POST /actions/complete-user-task` with the form's variables |
 | Texting `status` | PRs in flight and open escalations |
 
-Floors are still connected in the lobby: the office reads issues and PRs for the whiteboard from GitHub as usual.
+Floors are still shown in the lobby, but nothing here touches GitHub: the office serves the whiteboard's issues and
+PRs from what the bridge last saw (`FloorBook`, `server/nano/backend.ts`) and can't change GitHub — nano-workforce
+does the work.
 Hire workers with `c8ctl nano hire` / `c8 nano workforce`: they take a desk when they connect.
 
 | env | default | |
@@ -24,11 +28,28 @@ Hire workers with `c8ctl nano hire` / `c8 nano workforce`: they take a desk when
 | `CUBEFARM_NANO_SECRET` | `NANO_PR_WEBHOOK_SECRET` | sent as `x-hook-secret` |
 | `CUBEFARM_NANO_POLL_MS` | 5000 | |
 | `CUBEFARM_NANO_BASE_BRANCH` | the repo's default branch (sent with `confirmDefaultBase`) | e.g. `epic/issue-{n}` |
+| `CUBEFARM_NANO_AUTH` | from `user:pass@` in the URL | the app's `Authorization` header, e.g. `Basic …` |
+
+## The CEO on nano-coder or Copilot
+
+Settings → The CEO → **Runs on**: Claude Code (the default), nano-coder or GitHub Copilot CLI. The other two run as
+`<cli> --acp` (Agent Client Protocol over stdio), with the CEO's model from the CEO tab (`--model`; empty: the
+harness's own default). ACP has no system prompt, so the CEO's instructions go with each new session's first
+prompt. nano-coder has no MCP, so the office tools are a shell command instead:
+`node <SWARM_HOME>/bin/cubefarm-office.cjs <tool> -b <base64url of the JSON arguments>`, which posts to
+`/api/office/<session token>/<tool>` (the CEO's instructions list the tools and their arguments). The arguments go
+base64url-encoded after `-b` (use `-b e30` for none) so they survive cmd.exe, PowerShell and POSIX shells unquoted;
+`-` reads the JSON from stdin instead.
+
+With `--nano`, an ACP CEO also gets nano-workforce's agent skill (`GET /app/api/agent/skill`, same base URL and
+auth, fetched again after ten minutes) in its instructions. Phone texts that aren't `status` / `answer` / `start` go to
+it, and it drives nano-workforce through the skill. With Claude Code, or with `--demo`, nano mode has no real CEO
+session, as before.
 
 State lives in `nano-state.json` (`demo-nano-state.json` with `--demo`), apart from the usual office's.
 
-Try it without anything real: `node scripts/fake-nano.mjs 4398`, then
-`SWARM_HOME=$PWD/.swarm-home SWARM_PORT=<port> node --import tsx server/index.ts --demo --nano http://localhost:4398`.
+Try it without anything real: `node scripts/fake-nano.mjs 4398` (it serves both the app and a fake engine), then
+`SWARM_HOME=$PWD/.swarm-home SWARM_PORT=<port> node --import tsx server/index.ts --demo --nano http://localhost:4398 --nano-engine http://localhost:4398`.
 
 ## Notes from a live server (0.200.4)
 

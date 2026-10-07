@@ -116,7 +116,7 @@ describe('office tools', () => {
     await office.server.instance.connect(serverSide);
     const client = new Client({ name: 'test', version: '1.0.0' });
     await client.connect(clientSide);
-    return { client, floors };
+    return { client, floors, office };
   };
 
   it('lists every tool the CEO relies on', async () => {
@@ -138,6 +138,22 @@ describe('office tools', () => {
       'set_floor_profile',
       'update_job',
     ]);
+  });
+
+  it('runs a tool by name for the shell command, checking its arguments', async () => {
+    const { office, floors } = await connect();
+    expect(await office.call('set_floor_profile', { floor: 2, summary: 'x' })).toBe('saved');
+    expect(floors).toEqual([{ floor: 2, summary: 'x' }]);
+    await expect(office.call('set_floor_profile', { floor: 'two' })).rejects.toThrow(/Bad arguments for set_floor_profile: floor/);
+    await expect(office.call('hire_everyone', {})).rejects.toThrow(/No office tool hire_everyone.*company_status/);
+  });
+
+  it('lists the tools for a CEO without MCP, optional arguments marked', async () => {
+    const { office } = await connect();
+    const lines = office.catalog().split('\n');
+    expect(lines).toHaveLength(14);
+    expect(lines.find((l) => l.startsWith('- company_status:'))).toBeTruthy();
+    expect(lines.find((l) => l.startsWith('- file_issue '))).toMatch(/^- file_issue \{floor, title, body, specialty\?\}: /);
   });
 
   it('still takes preview_env as a map of strings', async () => {
@@ -246,6 +262,106 @@ describe('planRoute (route_issue)', () => {
   });
 });
 
+describe('the CEO on another harness', () => {
+  const base = { name: 'Morgan', company: 'Acme', manager: 'Sam', notesFile: 'NOTES.md', sessionLimit: 0, teamCap: 5, hiring: 'approve' as const };
+
+  it('gets the office tools as a shell command, not MCP', () => {
+    const p = ceoSystemPrompt({ ...base, shellTools: { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' } });
+    expect(p).toContain(`node "/x/cubefarm-office.cjs" <tool> -b <base64url of the JSON arguments>`);
+    expect(p).toContain('- company_status: everything');
+    expect(p).not.toContain('mcp__office__');
+    expect(ceoSystemPrompt(base)).toContain('mcp__office__company_status');
+  });
+
+  it("carries nano-workforce's skill when there is one", () => {
+    expect(ceoSystemPrompt({ ...base, nanoSkill: '# Nano Workforce operator skill\n' })).toMatch(/<nano-workforce-skill>\n# Nano Workforce operator skill\n<\/nano-workforce-skill>/);
+    expect(ceoSystemPrompt(base)).not.toContain('nano-workforce');
+  });
+
+  it('permits nano-workforce mutations when the skill is present, and drops the clone-reading instruction', () => {
+    const shellTools = { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' };
+    const nano = ceoSystemPrompt({ ...base, shellTools, nanoSkill: '# skill\n' });
+    // The blanket "no commands that change anything" rule must not forbid the nano-workforce skill the prompt then hands over.
+    expect(nano).not.toContain('run no other commands that change anything');
+    // Nano mode clones nothing (the floors are nano-workforce processes), so the prompt must not send the CEO reading
+    // clones that don't exist — it says so instead of pointing at read-only reference clones.
+    expect(nano).toContain('Nano mode keeps no repository clones');
+    expect(nano).not.toContain('never edit their files');
+    expect(nano).not.toContain('Read the repositories through their clone paths');
+    expect(nano).toContain('nano-workforce commands in the skill below');
+    expect(nano).toContain('Change things only through the office tools and the nano-workforce skill below.');
+    // Without the skill the strict read-only restriction stays.
+    const plain = ceoSystemPrompt({ ...base, shellTools });
+    expect(plain).toContain('run no other commands that change anything');
+    expect(plain).toContain('Change things only through the office tools.');
+    expect(plain).not.toContain('nano-workforce');
+  });
+
+  it('keeps nano-mode wording when the skill fetch failed (nano:true, no skill)', () => {
+    // A transient /agent/skill outage must not flip the CEO into the non-nano branch that sends it reading clones
+    // that do not exist. Nano-mode wording is driven by the mode, not by whether the skill loaded.
+    const shellTools = { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' };
+    const p = ceoSystemPrompt({ ...base, shellTools, nano: true });
+    expect(p).toContain('Nano mode keeps no repository clones');
+    expect(p).not.toContain('Read the repositories through their clone paths');
+    // There is no skill to hand over, so it must not claim one is below — but it must tell the CEO the skill is gone.
+    expect(p).not.toContain('<nano-workforce-skill>');
+    expect(p).not.toContain('nano-workforce commands in the skill below');
+    expect(p).toContain('agent skill could not be loaded right now');
+    expect(p).toContain('Change things only through the office tools.');
+  });
+
+  it('previews the runtime skill as pending, not as a load failure (nanoSkillPending)', () => {
+    // The manager's prompt preview renders before any session fetches the skill. It must not show the
+    // "could not be loaded" fallback (which would wrongly tell the manager the live CEO is skill-less and
+    // forbid nano-workforce commands); it shows the skill as forthcoming instead, matching the real session.
+    const shellTools = { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' };
+    const p = ceoSystemPrompt({ ...base, shellTools, nano: true, nanoSkillPending: true });
+    expect(p).not.toContain('agent skill could not be loaded right now');
+    expect(p).toContain('<nano-workforce-skill>');
+    expect(p).toContain('nano-workforce commands in the skill below');
+    expect(p).toContain('Change things only through the office tools and the nano-workforce skill below.');
+    // A real fetched skill still wins over the placeholder.
+    const real = ceoSystemPrompt({ ...base, shellTools, nano: true, nanoSkill: '# real\n', nanoSkillPending: true });
+    expect(real).toContain('# real');
+    expect(real).not.toContain('fetched when your session starts');
+    // The MCP (claude) preview path too: pending drives nano wording even without shellTools.
+    const mcp = ceoSystemPrompt({ ...base, nano: true, nanoSkillPending: true });
+    expect(mcp).toContain('<nano-workforce-skill>');
+    expect(mcp).not.toContain('agent skill could not be loaded right now');
+  });
+
+  it('drives the nano clone-reading wording even on the MCP (claude) harness', () => {
+    // The non-shell branch must also respect nano mode: the preview path can render it with the claude harness.
+    const nano = ceoSystemPrompt({ ...base, nano: true });
+    expect(nano).toContain('Nano mode keeps no repository clones');
+    expect(nano).not.toContain('Read the repositories through their clone paths with Read');
+    const plain = ceoSystemPrompt(base);
+    expect(plain).toContain('Read the repositories through their clone paths with Read');
+    expect(plain).not.toContain('Nano mode keeps no repository clones');
+  });
+
+  it('lets the CEO write its notes file directly, next to the mutation restrictions', () => {
+    // The restrictions forbid mutating repository/company state, but no office tool writes the notes file — so the
+    // prompt must carve it out, or an ACP CEO can't keep the durable notes the same breath requires.
+    for (const nanoSkill of [undefined, '# skill\n']) {
+      const p = ceoSystemPrompt({ ...base, shellTools: { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' }, nanoSkill });
+      expect(p).toContain('NOTES.md is the one file you may write directly');
+    }
+  });
+
+  it('passes tool arguments shell-independently (base64url), never quoted JSON', () => {
+    // An ACP CEO may run under cmd.exe/PowerShell, where single quotes are literal: quoted JSON never parses. The
+    // prompt must send the arguments base64url (letters/digits/-/_), which every shell passes through unchanged.
+    for (const nanoSkill of [undefined, '# skill\n']) {
+      const p = ceoSystemPrompt({ ...base, shellTools: { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' }, nanoSkill });
+      expect(p).toContain('-b <base64url of the JSON arguments>');
+      expect(p).toContain('never quoted JSON');
+      expect(p).not.toContain(`<tool> '<json arguments>'`);
+    }
+  });
+});
+
 describe('planning guidance', () => {
   const system = ceoSystemPrompt({ name: 'Luna', company: 'Acme', manager: 'Sam', notesFile: 'notes.md', sessionLimit: 0, teamCap: 6, hiring: 'approve' });
   const floor = { floor: 2, fullName: 'acme/app', clone: '/clones/app', mission: 'Add voice messages', backlog: 0 };
@@ -318,6 +434,49 @@ describe('triage', () => {
     expect(system).toContain('Triage jobs:');
     expect(system).toContain('They are read-only to you. You cannot run shell commands.');
     expect(system).toContain('Change things only through the mcp__office__ tools.');
+  });
+});
+
+describe('ceoJobPrompt with no clone (nano mode)', () => {
+  // Nano mode keeps no repository clones, so ceoFloor passes clone: null. The prompt must not hand the CEO a
+  // clone path to read (it would be a /demo/... stand-in that does not exist), in any job kind.
+  const bare = (mission: string, backlog: number) => ({ floor: 2, fullName: 'acme/app', clone: null, mission, backlog });
+  const pr = {
+    number: 108,
+    title: 'Jukebox volume',
+    url: 'https://github.com/acme/app/pull/108',
+    round: 3,
+    why: 'stuck',
+    summary: 'ok',
+    fixInstructions: '',
+    mergeNote: '',
+    checks: 'passing',
+    failedChecks: [],
+    pendingChecks: [],
+    mergeable: 'MERGEABLE',
+    mergeState: 'CLEAN',
+    triage: 1,
+  };
+
+  it('omits the clone sentence in triage, onboard and plan, but keeps the rest', () => {
+    const triage = ceoJobPrompt({ kind: 'triage', repoId: 'r1', prNumber: 108, at: 0 }, bare('', 0), pr);
+    expect(triage).not.toContain('clone');
+    expect(triage).toContain('https://github.com/acme/app/pull/108');
+
+    const onboard = ceoJobPrompt({ kind: 'onboard', repoId: 'r1', at: 0 }, bare('Add voice', 0));
+    expect(onboard).not.toContain('clone');
+    expect(onboard).toContain('just joined the company.');
+
+    const plan = ceoJobPrompt({ kind: 'plan', repoId: 'r1', at: 0 }, bare('Add voice', 2));
+    expect(plan).not.toContain('clone');
+    expect(plan).toContain('(acme/app):');
+  });
+
+  it('still names the clone path when one exists', () => {
+    const withClone = { floor: 2, fullName: 'acme/app', clone: '/clones/app', mission: 'Add voice', backlog: 0 };
+    expect(ceoJobPrompt({ kind: 'onboard', repoId: 'r1', at: 0 }, withClone)).toContain('read-only clone is at /clones/app');
+    expect(ceoJobPrompt({ kind: 'plan', repoId: 'r1', at: 0 }, withClone)).toContain('clone at /clones/app');
+    expect(ceoJobPrompt({ kind: 'triage', repoId: 'r1', prNumber: 108, at: 0 }, withClone, pr)).toContain('read-only clone of the default branch at /clones/app');
   });
 });
 

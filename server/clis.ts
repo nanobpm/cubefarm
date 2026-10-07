@@ -105,7 +105,12 @@ export function commandFor(id: AgentCli): { file: string; args: string[] } | nul
   const bundled = id === 'claude' ? bundledClaude() : null;
   if (bundled) return { file: bundled, args: [] };
   const def = CLIS.find((c) => c.id === id);
-  const found = def && resolveCommand(def.command);
+  return def ? programFor(def.command) : null;
+}
+
+/** How to start a program on PATH, unwrapping npm's .cmd shim on Windows. */
+export function programFor(command: string): { file: string; args: string[] } | null {
+  const found = resolveCommand(command);
   if (!found) return null;
   if (WIN && /\.(cmd|bat)$/i.test(found)) {
     try {

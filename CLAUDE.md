@@ -82,6 +82,8 @@ Server (`server/`, Node + Express 5 + ws, run by tsx in development; esbuild bun
 - `terminal.ts`: `AgentTerminal`, a headless xterm mirror per agent (replay for late viewers, saved to disk), its
   `/ws/term` viewers, and keystrokes/resizes to the running CLI.
 - `ceo.ts`: the CEO's office MCP tools (`createOfficeTools`, zod-validated), `ceoSystemPrompt`, `ceoJobPrompt`.
+- `acpRunner.ts`: the CEO on another harness (`settings.ceoHarness`: nano-coder, Copilot) over ACP (`<cli> --acp`),
+  same session contract; the office tools as a shell command (`POST /api/office/:token/:tool`). `acp.ts` is its pure part.
 - `backend.ts`: the `Backend` interface (everything touching GitHub, git, disk and sessions) and `realBackend`.
 - `demo.ts`: `createDemoBackend()`: fake GitHub, fake sessions (drawn into the agent's terminal in the terminal runtime), fake previews for `--demo`;
   `--floors N --agents N` (or `SWARM_DEMO_FLOORS` / `SWARM_DEMO_AGENTS`) makes it a big company for scale tests.

@@ -6,7 +6,7 @@
  */
 import type { EngineApi, EngineElement, NanoApi, NanoEscalation, NanoPr } from './client.ts';
 import type { NanoBoard } from '../../shared/types.ts';
-import { BENCH, buildWorld, parseProcess, type Floor, type ProcessModel, type Seat } from './floors.ts';
+import { BENCH, buildWorld, parseProcess, rootsOf, type Floor, type ProcessModel, type Seat } from './floors.ts';
 import { escalationMessage, escalationRef, parseAnswer, TranscriptReader, type ScreenLine } from './mirror.ts';
 
 export interface NanoHost {
@@ -22,6 +22,8 @@ export interface NanoHost {
   phone(text: string): void;
   /** The manager should hear about this one (notifications). */
   needsHuman(title: string, body: string): void;
+  /** The worker instances the office still has at desks (persisted across office restarts): to reconcile ghosts. */
+  workers(): string[];
 }
 
 export interface NanoConfig {
@@ -29,8 +31,39 @@ export interface NanoConfig {
   pollMs: number;
   /** Base branch for hand-offs: '' = the repo's default branch; may contain {n} (the issue number). */
   baseBranch: string;
+  /** The app's `x-hook-secret`, so an ACP CEO's fetched skill can reach the same instance (nanoAgentEnv). */
+  secret?: string;
+  /** The app's Authorization header (e.g. "Basic …"), from URL-embedded credentials, for the same reason. */
+  auth?: string;
   /** Where the floors are kept for the office's backend (server/nano/backend.ts). */
   book?: { set(floors: Floor[]): void };
+}
+
+/**
+ * The environment an ACP CEO's fetched agent skill needs to reach the same nano-workforce the office uses: its skill
+ * resolves the target from `NANO_WORKFORCE_URL` (guarded by `NANO_PR_WEBHOOK_SECRET`), not the office's own flags, so
+ * without these it falls back to localhost or gets 401s. URL-embedded Basic Auth is put back into the URL's userinfo.
+ */
+export function nanoAgentEnv(cfg: { url: string; secret?: string; auth?: string }): Record<string, string> {
+  const env: Record<string, string> = {};
+  let url = cfg.url;
+  if (cfg.auth?.startsWith('Basic ')) {
+    try {
+      const creds = Buffer.from(cfg.auth.slice('Basic '.length), 'base64').toString('utf8');
+      const sep = creds.indexOf(':');
+      const user = sep < 0 ? creds : creds.slice(0, sep);
+      const pass = sep < 0 ? '' : creds.slice(sep + 1);
+      const u = new URL(url);
+      u.username = encodeURIComponent(user);
+      if (pass) u.password = encodeURIComponent(pass);
+      url = u.toString().replace(/\/$/, '');
+    } catch {
+      // A URL we can't parse is left as-is: the plain base URL is still better than none.
+    }
+  }
+  env.NANO_WORKFORCE_URL = url;
+  if (cfg.secret) env.NANO_PR_WEBHOOK_SECRET = cfg.secret;
+  return env;
 }
 
 const MAX_LINES_PER_TICK = 200;
@@ -113,11 +146,11 @@ export class NanoBridge {
             if (xml) this.models.set(k, parseProcess(xml));
           }),
       );
-      const roots = instances.filter((i) => !i.parentProcessInstanceKey || !instances.some((x) => x.processInstanceKey === i.parentProcessInstanceKey));
+      const rootKeys = rootsOf(instances);
       const elements = new Map<string, EngineElement[]>();
       await Promise.all(
         instances.map(async (i) => {
-          const root = roots.find((r) => r.processInstanceKey === i.processInstanceKey)?.processInstanceKey ?? i.processInstanceKey;
+          const root = rootKeys.get(i.processInstanceKey) ?? i.processInstanceKey;
           const els = await this.engine.elements(i.processInstanceKey).catch(() => []);
           elements.set(root, [...(elements.get(root) ?? []), ...els]);
         }),
@@ -132,17 +165,48 @@ export class NanoBridge {
         this.host.seat(s);
         this.seated.add(s.instance);
       }
-      for (const gone of [...this.seated].filter((i) => !seats.some((s) => s.instance === i))) {
-        this.host.unseat(gone);
-        this.seated.delete(gone);
-      }
+      // Reconcile against the office's persisted workers too, not only ones this process has seen: a worker that
+      // vanished while the office was down would otherwise stay a ghost desk forever. `seats` is the complete supply
+      // snapshot, so anyone the host still has but supply no longer reports is gone.
+      const live = new Set(seats.map((s) => s.instance));
+      // A departed worker is no longer in `seats`, so the follow block below never clears it: flush its stream
+      // here (its last buffered text, then forget the stream) so readers/offsets/following don't leak forever.
+      // Fetch once more before flushing: `follow` below only visits current seats, so entries written since the
+      // last poll would otherwise be lost. Flush before unseating: the real host's unseat removes the worker, so
+      // a log after it would be dropped. Flush the departed concurrently: a serial await per worker would make one
+      // poll take up to workerCount × the transcript timeout, freezing every floor/seat/escalation update during a
+      // mass departure. Each worker keeps its own follow → end → unseat order; streams are keyed per worker so the
+      // tasks don't contend.
+      await Promise.all(
+        [...new Set([...this.seated, ...this.host.workers()])]
+          .filter((gone) => !live.has(gone))
+          .map(async (gone) => {
+            const stream = this.following.get(gone);
+            if (stream) {
+              await this.follow(gone, stream);
+              this.endStream(gone, stream);
+            }
+            this.following.delete(gone);
+            this.host.unseat(gone);
+            this.seated.delete(gone);
+          }),
+      );
       this.escalations(escalations);
-      for (const s of seats) {
-        const was = this.following.get(s.instance);
-        if (was && was !== s.stream) this.endStream(s.instance, was);
-        if (s.stream) this.following.set(s.instance, s.stream);
-        else this.following.delete(s.instance);
-      }
+      // Concurrent for the same reason as the departed flush above: one slow stream must not stall the rest. Each
+      // seat's `was` is read synchronously before any await (distinct instances), so the flushes don't race.
+      await Promise.all(
+        seats.map(async (s) => {
+          const was = this.following.get(s.instance);
+          if (was && was !== s.stream) {
+            // Same as the departed-worker flush: pull anything written to the old stream since the last poll before
+            // forgetting it, since the follow pass below only fetches the worker's new stream.
+            await this.follow(s.instance, was);
+            this.endStream(s.instance, was);
+          }
+          if (s.stream) this.following.set(s.instance, s.stream);
+          else this.following.delete(s.instance);
+        }),
+      );
       await Promise.all(seats.filter((s) => s.stream).map((s) => this.follow(s.instance, s.stream as string)));
     } catch (err) {
       const msg = (err as Error).message;
@@ -194,6 +258,14 @@ export class NanoBridge {
     setTimeout(() => void this.tick(), 1500).unref?.();
     return branch;
   }
+
+  /** nano-workforce's agent skill for the CEO, fetched again after ten minutes (it follows the app's version). */
+  async agentSkill(): Promise<string> {
+    if (this.skill && Date.now() - this.skill.at < 10 * 60_000) return this.skill.text;
+    this.skill = { text: await this.api.agentSkill(), at: Date.now() };
+    return this.skill.text;
+  }
+  private skill: { text: string; at: number } | null = null;
 
   /** A text from the manager: an answer to an escalation (the reply to send back), or null when it isn't one. */
   async answer(text: string): Promise<string | null> {

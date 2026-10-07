@@ -1,14 +1,118 @@
-import { useEffect, useRef } from 'react';
-import type { RepoView } from '../../../shared/types';
+import { useEffect, useId, useRef } from 'react';
+import type { NanoBoard, NanoShape, RepoView } from '../../../shared/types';
 import { useStore } from '../store';
 import { paintNanoBoard, useMinute } from '../world/NanoBoard';
+import { ago } from '../world/nanoDraw';
 import { Panel } from './Panel';
 
+/** Every state the canvas shows for a shape, joined: an incident step can still be held by a worker, so no early return. */
+function shapeState(s: NanoShape, now: number): string {
+  const parts: string[] = [];
+  if (s.incident) parts.push('incident');
+  if (s.workers.length) parts.push(`worker: ${s.workers.join(', ')}`);
+  switch (s.waiting) {
+    case 'escalation':
+      parts.push('waiting on you (escalation)');
+      break;
+    case 'human':
+      parts.push('waiting on a person');
+      break;
+    case 'queued':
+      parts.push('queued, no worker yet');
+      break;
+    case 'event':
+      parts.push('waiting for an event or timer');
+      break;
+  }
+  // The canvas chips `● N` when several tokens sit on one shape; announce the count too, like `done ×N`. The canvas
+  // also paints the elapsed `since` under an active shape, so screen-reader users get that duration too (not just that
+  // it is active): a step just started reads very differently from one stuck for hours.
+  if (s.active) {
+    const label = s.active > 1 ? `active ×${s.active}` : 'active';
+    const dur = ago(s.since, now);
+    parts.push(dur ? `${label} for ${dur}` : label);
+  }
+  if (s.done) parts.push(`done ×${s.done}`);
+  return parts.length ? parts.join('; ') : 'not reached';
+}
+
+/**
+ * The same state the canvas paints, as text a screen reader can read: a canvas alone has no accessible contents, so
+ * this structured list is what conveys the live board (step names, who's on them, what's waiting).
+ */
+function NanoBoardSummary({ board, id, now }: { board: NanoBoard | undefined; id: string; now: number }) {
+  if (!board) return <div id={id} className="sr-only" />;
+  if (board.kind === 'process') {
+    return (
+      <div id={id} className="sr-only">
+        <h3>
+          {board.title} — {board.subtitle}
+          {board.incident ? ' (incident)' : ''}
+        </h3>
+        <ul>
+          {board.shapes.map((s) => (
+            <li key={s.id}>
+              {s.name}: {shapeState(s, now)}
+            </li>
+          ))}
+        </ul>
+        {board.escalations.length > 0 && (
+          <ul aria-label="Escalations waiting on you">
+            {board.escalations.map((e) => (
+              <li key={e.ref}>
+                {e.label} (answer {e.ref})
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div id={id} className="sr-only">
+      <h3>nano-workforce fleet</h3>
+      <ul aria-label="Agent job types">
+        {board.types.map((t) => {
+          // Mirror the canvas chips, which show each held worker's elapsed time and the oldest queued wait.
+          const held = t.held.map((h) => (ago(h.since, now) ? `${h.worker} (${ago(h.since, now)})` : h.worker)).join(', ');
+          const queuedAgo = t.queued.length ? ago(Math.min(...t.queued.map((q) => q.since ?? now)), now) : '';
+          return (
+            <li key={t.type}>
+              {t.type}: {t.held.length ? `held by ${held}` : 'none held'}
+              {t.queued.length ? `, ${t.queued.length} queued${queuedAgo ? ` for ${queuedAgo}` : ''}` : ''}
+            </li>
+          );
+        })}
+      </ul>
+      <ul aria-label="Processes running">
+        {board.processes.map((p, i) => (
+          <li key={p.floor ?? i}>
+            {p.label}
+            {p.incident ? ' (incident)' : ''}: {p.active.length ? p.active.join(', ') : 'idle'}
+          </li>
+        ))}
+      </ul>
+      <p>Idle: {board.idle.length ? board.idle.map((w) => w.name).join(', ') : 'none'}.</p>
+      <p>Offline: {board.offline.length ? board.offline.join(', ') : 'none'}.</p>
+      {board.escalations.length > 0 && (
+        <ul aria-label="Escalations waiting on you">
+          {board.escalations.map((e) => (
+            <li key={e.ref}>
+              {e.label} (answer {e.ref})
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** A nano board up close: the same drawing as on the wall, big enough to read, with what to text to act on it. */
-export function NanoBoardView({ repo }: { repo: RepoView }) {
+export function NanoBoardView({ repo, embedded }: { repo: RepoView; embedded?: boolean }) {
   const repos = useStore((s) => s.repos);
   const now = useMinute();
   const canvas = useRef<HTMLCanvasElement>(null);
+  const summaryId = useId();
   const b = repo.nanoBoard;
   useEffect(() => {
     const c = canvas.current;
@@ -16,9 +120,19 @@ export function NanoBoardView({ repo }: { repo: RepoView }) {
     if (!c || !ctx) return;
     paintNanoBoard(ctx, c.width, c.height, repo, repos, Date.now());
   }, [repo, repos, now]);
-  return (
-    <Panel title={b?.kind === 'fleet' ? '🏭 nano-workforce fleet' : `⚙️ ${repo.fullName}`} accent={repo.color} wide>
-      <canvas ref={canvas} width={2560} height={b?.kind === 'fleet' ? 1100 : 1000} style={{ width: '100%', height: 'auto', borderRadius: 8, background: '#fbfcfe' }} />
+  const title = b?.kind === 'fleet' ? '🏭 nano-workforce fleet' : `⚙️ ${repo.fullName}`;
+  const body = (
+    <>
+      <NanoBoardSummary board={b} id={summaryId} now={now} />
+      <canvas
+        ref={canvas}
+        role="img"
+        aria-label={b?.kind === 'fleet' ? 'nano-workforce fleet board' : `Process board for ${repo.fullName}`}
+        aria-describedby={summaryId}
+        width={2560}
+        height={b?.kind === 'fleet' ? 1100 : 1000}
+        style={{ width: '100%', height: 'auto', borderRadius: 8, background: '#fbfcfe' }}
+      />
       <p className="muted small">
         {b?.kind === 'process' ? (
           <>
@@ -34,6 +148,19 @@ export function NanoBoardView({ repo }: { repo: RepoView }) {
           </a>
         )}
       </p>
+    </>
+  );
+  if (embedded) {
+    return (
+      <section className="kanban-embedded" style={{ ['--accent' as string]: repo.color }}>
+        <h2 className="kanban-embedded-title">{title}</h2>
+        {body}
+      </section>
+    );
+  }
+  return (
+    <Panel title={title} accent={repo.color} wide>
+      {body}
     </Panel>
   );
 }

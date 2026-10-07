@@ -75,6 +75,8 @@ export interface NanoApi {
   transcript(stream: string, from: number): Promise<NanoTranscript | null>;
   startPlanFanout(body: { issue: string; baseBranch: string; confirmDefaultBase?: boolean }): Promise<unknown>;
   completeUserTask(userTaskKey: string, variables: Record<string, unknown>): Promise<unknown>;
+  /** nano-workforce's agent skill (markdown): how an agent drives this instance. */
+  agentSkill(): Promise<string>;
 }
 
 /** A process instance the engine is running. */
@@ -163,14 +165,18 @@ export const nodeFetch = ((url: string, init: RequestInit = {}) =>
     req.end();
   })) as unknown as typeof fetch;
 
-/** `base` is the app's origin (http://localhost:3000) or its console-proxy URL; `/app/api` is added. */
-export function nanoClient(base: string, opts: { secret?: string; fetch?: typeof fetch; timeoutMs?: number } = {}): NanoApi {
+/**
+ * `base` is the app's origin (http://localhost:3000) or its console-proxy URL; `/app/api` is added. `auth` is a whole
+ * Authorization header value, e.g. "Basic …".
+ */
+export function nanoClient(base: string, opts: { secret?: string; auth?: string; fetch?: typeof fetch; timeoutMs?: number } = {}): NanoApi {
   const root = `${base.replace(/\/+$/, '').replace(/\/app\/api$/, '')}/app/api`;
   const doFetch = opts.fetch ?? nodeFetch;
   const call = async <T>(method: 'GET' | 'POST', p: string, body?: unknown): Promise<T> => {
     const headers: Record<string, string> = { accept: 'application/json' };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (opts.secret) headers['x-hook-secret'] = opts.secret;
+    if (opts.auth) headers.authorization = opts.auth;
     const res = await doFetch(`${root}${p}`, {
       method,
       headers,
@@ -205,6 +211,11 @@ export function nanoClient(base: string, opts: { secret?: string; fetch?: typeof
     },
     startPlanFanout: (body) => call('POST', '/actions/start/plan-fanout', body),
     completeUserTask: (userTaskKey, variables) => call('POST', '/actions/complete-user-task', { userTaskKey, variables, operator: 'cubefarm' }),
+    agentSkill: async () => {
+      const r = await call<{ skill?: unknown } | null>('GET', '/agent/skill');
+      if (typeof r?.skill !== 'string' || !r.skill.trim()) throw new NanoError(502, 'nano-workforce GET /agent/skill: no skill in the answer');
+      return r.skill;
+    },
   };
 }
 

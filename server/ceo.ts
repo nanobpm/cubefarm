@@ -50,8 +50,20 @@ export interface OfficeTools {
   server: McpSdkServerConfigWithInstance;
   /** A fresh MCP server with the same tools, for one request from a CEO running in a terminal (served over HTTP). */
   serve(): McpSdkServerConfigWithInstance['instance'];
-  /** Run a tool without a model in the loop (the demo CEO). */
+  /** The tools listed for the CEO's instructions, when it calls them through the shell command. */
+  catalog(): string;
+  /** Run a tool without a model in the loop (the demo CEO, and the shell command for harnesses without MCP). */
   call(name: string, args: Record<string, unknown>): Promise<string>;
+}
+
+/** The office tools as a CEO without MCP reads them: one line each, `name {arg, optional?}: description`. */
+export function toolCatalog(defs: { name: string; description: string; inputSchema: Record<string, z.ZodType> }[]): string {
+  return defs
+    .map((d) => {
+      const args = Object.entries(d.inputSchema).map(([k, t]) => (t.safeParse(undefined).success ? `${k}?` : k));
+      return `- ${d.name}${args.length ? ` {${args.join(', ')}}` : ''}: ${d.description}`;
+    })
+    .join('\n');
 }
 
 const EFFORT = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -199,10 +211,13 @@ export function createOfficeTools(h: OfficeHandlers): OfficeTools {
   return {
     server,
     serve: () => createSdkMcpServer({ name: 'office', version: '1.0.0', tools: defs }).instance,
+    catalog: () => toolCatalog(defs as never),
     async call(name, args) {
       const def = defs.find((d) => d.name === name);
-      if (!def) throw new Error(`No office tool ${name}`);
-      const res = (await def.handler(args as never, undefined)) as { content: { text?: string }[] };
+      if (!def) throw new Error(`No office tool ${name}. The tools: ${defs.map((d) => d.name).join(', ')}.`);
+      const parsed = z.object(def.inputSchema as Record<string, z.ZodType>).safeParse(args);
+      if (!parsed.success) throw new Error(`Bad arguments for ${name}: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`);
+      const res = (await def.handler(parsed.data as never, undefined)) as { content: { text?: string }[] };
       return res.content.map((c) => c.text ?? '').join('\n');
     },
   };
@@ -232,6 +247,10 @@ export function checkPendingLimit(pending: number, max = MAX_PENDING_PROPOSALS) 
 
 // ---------- prompts ----------
 
+/** Preview stand-in for the runtime-fetched nano skill: the manager's prompt preview renders before a session
+ * exists to fetch it, so the skill body is shown as pending rather than as a load failure. */
+const NANO_SKILL_PREVIEW = '(fetched when your session starts — the nano-workforce agent skill appears here)';
+
 export function ceoSystemPrompt(o: {
   name: string;
   company: string;
@@ -240,8 +259,23 @@ export function ceoSystemPrompt(o: {
   sessionLimit: number;
   teamCap: number;
   hiring: 'approve' | 'auto';
+  /** A harness without MCP: the office tools are a shell command (`<command> <tool> '<json>'`), listed in `catalog`. */
+  shellTools?: { command: string; catalog: string };
+  /** True when the office runs in nano mode (floors are nano-workforce processes, no repository clones on disk). */
+  nano?: boolean;
+  /** nano-workforce's agent skill (--nano): how to drive the nano-workforce app behind the office. */
+  nanoSkill?: string;
+  /** Preview only: the runtime skill isn't fetched yet, so render it as a pending placeholder, not a load failure. */
+  nanoSkillPending?: boolean;
 }) {
   const manager = o.manager ? `the manager, ${o.manager}` : 'the human manager';
+  // Nano-mode wording is driven by the mode itself, never by whether the skill happened to load: a transient
+  // `/agent/skill` outage must not flip the CEO into the non-nano branch that sends it reading clones that do not
+  // exist. A present skill implies nano mode (older callers pass only nanoSkill).
+  const isNano = o.nano || !!o.nanoSkill || !!o.nanoSkillPending;
+  // The prompt preview runs before a session fetches the skill: show it as pending rather than treating its
+  // absence as a fetch failure, so the preview matches the instructions the live CEO will actually receive.
+  const skill = o.nanoSkill ?? (o.nanoSkillPending ? NANO_SKILL_PREVIEW : undefined);
   return [
     `You are ${o.name}, the CEO of ${o.company || 'an autonomous software company'}, run from an office building called cubefarm. You work from the corner office in the lobby.`,
     `Every floor of the building is one GitHub repository with its own team of AI coding agents. Developers pick up GitHub issues, each in their own git worktree, and open pull requests. QA testers review and verify every pull request (code review, tests, build, and a real browser via Playwright); when every tester is busy, a free developer who didn't write the PR covers QA. On floors with auto-merge on, the office merges a PR by itself once QA passes and GitHub's checks are green, and sends failing checks or merge conflicts back to a developer; on the others, ${manager} merges. The manager is your board: they approve hires and let-gos.`,
@@ -255,12 +289,27 @@ export function ceoSystemPrompt(o: {
     "- Write each floor's QA brief: what QA testers must check for this kind of project (for a 3D game: the canvas renders, controls respond, frame rate is smooth; for a website: links, phone layout, accessibility; for an API: status codes, validation, error cases).",
     '',
     'How you work:',
-    '- Call mcp__office__company_status first. It lists every floor, its clone path, team, backlog, pull requests and your pending proposals.',
-    '- Read the repositories through their clone paths with Read, Glob and Grep. They are read-only to you. You cannot run shell commands.',
-    `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time.`,
-    '- Change things only through the mcp__office__ tools.',
+    ...(o.shellTools
+      ? [
+          `- The office tools are a shell command: ${o.shellTools.command} <tool> -b <base64url of the JSON arguments> (a JSON object; use -b e30 for none: e30 is base64url of {}). It prints the result, and exits non-zero when the office refuses, with the reason. Encode the JSON arguments yourself as base64url (standard base64 of the UTF-8 bytes, with + → -, / → _, and any = padding removed; letters, digits, - and _ only) and pass that literal string, never quoted JSON — do the encoding yourself, not through a shell pipeline, so it works the same in every shell. Every shell this may run in (cmd.exe, PowerShell, bash) passes a base64url string through unchanged, while quoting differs between them. Call company_status first: it lists every floor, its clone path, team, backlog, pull requests and your pending proposals.`,
+          skill
+            ? '- Nano mode keeps no repository clones: the floors are nano-workforce processes, so there is nothing to read on disk. Change things only through the office tools and the nano-workforce commands in the skill below; run nothing else that changes anything.'
+            : isNano
+              ? '- Nano mode keeps no repository clones: the floors are nano-workforce processes, so there is nothing to read on disk. Change things only through the office tools; run nothing else that changes anything.'
+              : '- Read the repositories through their clone paths. They are read-only to you: run no other commands that change anything.',
+          `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time. ${o.notesFile} is the one file you may write directly — the restrictions above are about repository and company state, not your notes.`,
+          skill ? '- Change things only through the office tools and the nano-workforce skill below.' : '- Change things only through the office tools.',
+        ]
+      : [
+          '- Call mcp__office__company_status first. It lists every floor, its clone path, team, backlog, pull requests and your pending proposals.',
+          isNano
+            ? '- Nano mode keeps no repository clones: the floors are nano-workforce processes, so there is nothing to read on disk. You cannot run shell commands.'
+            : '- Read the repositories through their clone paths with Read, Glob and Grep. They are read-only to you. You cannot run shell commands.',
+          `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time.`,
+          '- Change things only through the mcp__office__ tools.',
+        ]),
     `- ${ONE_TURN}`,
-    "- Before update_job rewrites someone's job description, read the full one with mcp__office__agent_detail and keep what still applies, especially its safety rules.",
+    `- Before update_job rewrites someone's job description, read the full one with ${o.shellTools ? 'agent_detail' : 'mcp__office__agent_detail'} and keep what still applies, especially its safety rules.`,
     '',
     'Rules:',
     '- Every floor keeps at least one QA tester.',
@@ -272,16 +321,22 @@ export function ceoSystemPrompt(o: {
     '- Triage jobs: a pull request got stuck (needs-human). Look before the manager does, and bring them only real decisions. Read the facts in the job and the code, then call exactly one of retry_qa (a flaky QA session, or it has been fixed since), send_back (a developer can fix it; your note says how), rerun_checks (a red check that looks flaky or like an outage), close_pull (the approach is wrong: its issue stays open to be built again) or escalate (only the manager can decide: a product call, credentials, a broken setup).',
     "- When company.usage in company_status says pacing or paused, Claude's usage is running low and the office is finishing open work first: file only what is needed next, not a whole milestone.",
     '- Your final message goes straight to the manager\'s phone. Keep it short and plain: what you found, what you proposed, what you filed, and any question you need answered. No headings, no tables.',
+    ...(o.shellTools ? ['', 'The office tools:', o.shellTools.catalog] : []),
+    ...(skill
+      ? ['', "The work itself is run by a nano-workforce app behind the office. Its agent skill, for the manager's requests about it:", '<nano-workforce-skill>', skill.trim(), '</nano-workforce-skill>']
+      : isNano
+        ? ['', "The work itself is run by a nano-workforce app behind the office, but its agent skill could not be loaded right now. Drive the company through the office tools, and tell the manager the nano-workforce skill was unavailable if they ask for something that needs it."]
+        : []),
   ].join('\n');
 }
 
-export function ceoJobPrompt(job: CeoJob, floor: { floor: number; fullName: string; clone: string; mission: string; backlog: number } | null, pr?: TriagePr | null): string {
+export function ceoJobPrompt(job: CeoJob, floor: { floor: number; fullName: string; clone: string | null; mission: string; backlog: number } | null, pr?: TriagePr | null): string {
   switch (job.kind) {
     case 'triage':
       if (!floor || !pr) return `Pull request #${job.prNumber ?? '?'} no longer needs triage. Reply "Nothing to do."`;
       return [
         `Triage: pull request #${pr.number} on floor ${floor.floor} (${floor.fullName}) is stuck and needs a decision before it reaches the manager.`,
-        `"${pr.title}" · ${pr.url} · read-only clone of the default branch at ${floor.clone}`,
+        `"${pr.title}" · ${pr.url}${floor.clone ? ` · read-only clone of the default branch at ${floor.clone}` : ''}`,
         `Why it stopped: ${pr.why ?? 'unknown'}`,
         `QA round ${pr.round}. QA summary: ${pr.summary ?? 'none yet'}`,
         pr.fixInstructions ? `QA's fix instructions:\n${pr.fixInstructions}` : '',
@@ -296,7 +351,7 @@ export function ceoJobPrompt(job: CeoJob, floor: { floor: number; fullName: stri
     case 'onboard':
       if (!floor) return 'A floor was added but has since been removed. Reply "Nothing to do."';
       return [
-        `Floor ${floor.floor} (${floor.fullName}) just joined the company. Its read-only clone is at ${floor.clone}.`,
+        `Floor ${floor.floor} (${floor.fullName}) just joined the company.${floor.clone ? ` Its read-only clone is at ${floor.clone}.` : ''}`,
         'Study it: README, package manifest, source layout, tests, and how far along it is. Then:',
         "1. set_floor_profile with a one-line summary and a QA brief for this project. If npm run dev / start / preview wouldn't serve the app on PORT, also set preview_command (and preview_env) so the floor's preview monitor can run it.",
         '2. update_job for the people already on the floor so their titles, specialties and job descriptions fit this project (every floor starts with a generalist QA tester).',
@@ -310,7 +365,7 @@ export function ceoJobPrompt(job: CeoJob, floor: { floor: number; fullName: stri
     case 'plan':
       if (!floor) return 'A floor you were asked to plan has been removed. Reply "Nothing to do."';
       return [
-        `The manager has a brief for floor ${floor.floor} (${floor.fullName}, clone at ${floor.clone}):`,
+        `The manager has a brief for floor ${floor.floor} (${floor.fullName}${floor.clone ? `, clone at ${floor.clone}` : ''}):`,
         `"""${floor.mission}"""`,
         '',
         'Plan the next milestone toward it:',
