@@ -233,6 +233,7 @@ interface AgentRuntime {
   log: LogLine[];
   session: SessionHandle | null;
   startingHarness?: CeoHarness | null; // the CEO harness that accepted this job, set before any await and cleared once the session installs or startup aborts: routing must follow it even before `session` exists
+  pendingStartupMessages?: string[]; // phone messages that arrived during the ACP startup window (session installing), delivered to it on install so a mid-startup "Runs on" switch can't let startCeoWork discard them
   currentTool: string | null;
   browserUrl: string | null;
   screenshot: { data: Buffer; mime: string; at: number } | null;
@@ -3891,8 +3892,13 @@ export class Swarm {
     if (a.status !== 'working') {
       // stopped before the session started
       rt.startingHarness = null;
+      const pending = rt.pendingStartupMessages;
+      rt.pendingStartupMessages = undefined;
       this.state.ceo.job = null;
       if (job.kind === 'triage') this.endTriage(job);
+      // The session never installed, so buffered phone messages have no live handle to receive them: re-queue
+      // them (startCeoWork re-validates against the current harness) rather than dropping them silently.
+      for (const text of pending ?? []) this.enqueueCeo({ kind: 'chat', text, at: Date.now() });
       this.emitCeo();
       return;
     }
@@ -3945,6 +3951,18 @@ export class Swarm {
       },
     );
     rt.startingHarness = null; // the session now owns routing via `sessionHarness`; drop the startup marker so it can't go stale after the session ends
+    this.deliverStartupMessages(rt); // hand the live session any phone messages buffered while it was installing
+  }
+
+  /** Deliver phone messages buffered during the ACP startup window to the now-installed session. */
+  private deliverStartupMessages(rt: AgentRuntime) {
+    const pending = rt.pendingStartupMessages;
+    rt.pendingStartupMessages = undefined;
+    if (!pending?.length || !rt.session) return;
+    for (const text of pending) {
+      this.ceoIssues.managerMessage(); // each buffered message is a fresh request: the issue cap counts from here
+      rt.session.send(`Message from the manager (they read your reply on their phone, so keep it short):\n${text}`);
+    }
   }
 
   private onCeoFinished(a: PersistedAgent, result: SessionResult) {
@@ -3992,6 +4010,13 @@ export class Swarm {
       this.appendLog(a, [{ kind: 'manager', text: `▶ Manager: ${t}` }]);
       this.ceoIssues.managerMessage(); // a new request: the issue cap counts from here
       rt.session.send(`Message from the manager (they read your reply on their phone, so keep it short):\n${t}`);
+      return;
+    }
+    if (rt.startingHarness) {
+      // A session is installing (the ACP startup window): buffer the message for it rather than queueing, so a
+      // mid-startup "Runs on" switch to Claude can't let startCeoWork discard the queued chat before it lands.
+      this.appendLog(a, [{ kind: 'manager', text: `▶ Manager: ${t}` }]);
+      (rt.pendingStartupMessages ??= []).push(t);
       return;
     }
     this.enqueueCeo({ kind: 'chat', text: t, at: Date.now() });

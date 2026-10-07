@@ -111,6 +111,63 @@ describe('nano CEO queue revalidation', () => {
   });
 });
 
+// Regression (Copilot review 5436742206, "previously missed"): a phone message arriving during the ACP startup
+// window (session installing, `startingHarness` set, `session` still null) used to be enqueued; switching "Runs
+// on" to Claude before startup finished then let startCeoWork discard the queued chat, silently dropping the
+// manager's message. Such messages are now buffered for the installing session and delivered once it installs.
+describe('phone messages buffered during ACP startup are not dropped', () => {
+  function setup() {
+    const swarm = new Swarm(createDemoBackend());
+    (swarm as unknown as { ensureCeo(i: unknown[]): void }).ensureCeo([]);
+    const priv = swarm as unknown as {
+      state: {
+        agents: { id: string; role: string; status: string }[];
+        settings: { ceoHarness: string };
+        ceo: { queue: { kind: string; text?: string; at: number }[] };
+        messages: unknown[];
+      };
+      agentRt: Map<string, { session: unknown; startingHarness?: string | null; pendingStartupMessages?: string[] }>;
+      nano: unknown;
+      ceoIssues: { managerMessage(): void };
+      messageCeo(t: string): Promise<void>;
+      startCeoWork(): void;
+      deliverStartupMessages(rt: unknown): void;
+    };
+    const ceo = priv.state.agents.find((a) => a.role === 'ceo')!;
+    const rt = priv.agentRt.get(ceo.id)!;
+    return { priv, ceo, rt };
+  }
+
+  it('buffers a startup-window message instead of queueing it, so a later Claude switch cannot drop it', async () => {
+    const { priv, ceo, rt } = setup();
+    priv.nano = { answer: async () => null, summary: () => '' }; // nano mode: messageNano defers to the CEO
+    rt.session = null;
+    rt.startingHarness = 'copilot'; // a session is installing
+    await priv.messageCeo('why that plan?');
+    expect(rt.pendingStartupMessages).toEqual(['why that plan?']);
+    expect(priv.state.ceo.queue.some((j) => j.kind === 'chat')).toBe(false);
+    // The manager now flips "Runs on" to Claude before startup finishes; startCeoWork must not drop the message.
+    priv.state.settings.ceoHarness = 'claude';
+    ceo.status = 'working';
+    priv.startCeoWork();
+    expect(rt.pendingStartupMessages).toEqual(['why that plan?']);
+  });
+
+  it('delivers buffered startup messages to the session once it installs', () => {
+    const { priv, rt } = setup();
+    const sent: string[] = [];
+    rt.session = { send: (s: string) => sent.push(s) };
+    rt.pendingStartupMessages = ['first', 'second'];
+    priv.ceoIssues = { managerMessage() {} };
+    priv.deliverStartupMessages(rt);
+    expect(sent).toEqual([
+      'Message from the manager (they read your reply on their phone, so keep it short):\nfirst',
+      'Message from the manager (they read your reply on their phone, so keep it short):\nsecond',
+    ]);
+    expect(rt.pendingStartupMessages).toBeUndefined();
+  });
+});
+
 // Regression (Copilot review): agent_detail used to hard-code the CEO's codingAgent/model/effort as Claude's, so an
 // ACP CEO (or anyone inspecting it) read the wrong runtime configuration. It now follows the "Runs on" harness.
 describe('agent_detail reports the CEO harness, not always Claude', () => {
