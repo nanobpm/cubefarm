@@ -3836,6 +3836,7 @@ export class Swarm {
       teamCap: s.teamCap,
       hiring: s.hiring,
       ...(harness !== 'claude' ? { shellTools: { command: officeCommand(), catalog: this.officeTools().catalog() } } : {}),
+      ...(this.nano ? { nano: true } : {}),
       ...(nanoSkill ? { nanoSkill } : {}),
     };
   }

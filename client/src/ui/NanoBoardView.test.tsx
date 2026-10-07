@@ -69,4 +69,19 @@ describe('the nano board screen-reader summary', () => {
   it('still says not reached for a step with no state at all', () => {
     expect(summary([shape({})])).toContain('not reached');
   });
+
+  it('announces the active shape\'s elapsed duration, like the canvas (Copilot review)', () => {
+    // useMinute is mocked to 0, so `since` is a negative epoch to make `now - since` a positive elapsed time.
+    const html = summary([shape({ active: 2, since: -4 * 60_000 })]);
+    expect(html).toContain('active ×2 for 4m');
+    // A single active token with elapsed time too.
+    const one = summary([shape({ active: 1, since: -90 * 60_000 })]);
+    expect(one).toContain('active for 2h');
+  });
+
+  it('omits the duration when the active shape has no since', () => {
+    const html = summary([shape({ active: 1, since: null })]);
+    expect(html).toContain('active');
+    expect(html).not.toContain('active for');
+  });
 });

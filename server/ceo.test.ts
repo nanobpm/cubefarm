@@ -297,6 +297,30 @@ describe('the CEO on another harness', () => {
     expect(plain).not.toContain('nano-workforce');
   });
 
+  it('keeps nano-mode wording when the skill fetch failed (nano:true, no skill)', () => {
+    // A transient /agent/skill outage must not flip the CEO into the non-nano branch that sends it reading clones
+    // that do not exist. Nano-mode wording is driven by the mode, not by whether the skill loaded.
+    const shellTools = { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' };
+    const p = ceoSystemPrompt({ ...base, shellTools, nano: true });
+    expect(p).toContain('Nano mode keeps no repository clones');
+    expect(p).not.toContain('Read the repositories through their clone paths');
+    // There is no skill to hand over, so it must not claim one is below — but it must tell the CEO the skill is gone.
+    expect(p).not.toContain('<nano-workforce-skill>');
+    expect(p).not.toContain('nano-workforce commands in the skill below');
+    expect(p).toContain('agent skill could not be loaded right now');
+    expect(p).toContain('Change things only through the office tools.');
+  });
+
+  it('drives the nano clone-reading wording even on the MCP (claude) harness', () => {
+    // The non-shell branch must also respect nano mode: the preview path can render it with the claude harness.
+    const nano = ceoSystemPrompt({ ...base, nano: true });
+    expect(nano).toContain('Nano mode keeps no repository clones');
+    expect(nano).not.toContain('Read the repositories through their clone paths with Read');
+    const plain = ceoSystemPrompt(base);
+    expect(plain).toContain('Read the repositories through their clone paths with Read');
+    expect(plain).not.toContain('Nano mode keeps no repository clones');
+  });
+
   it('lets the CEO write its notes file directly, next to the mutation restrictions', () => {
     // The restrictions forbid mutating repository/company state, but no office tool writes the notes file — so the
     // prompt must carve it out, or an ACP CEO can't keep the durable notes the same breath requires.

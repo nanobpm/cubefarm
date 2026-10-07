@@ -257,10 +257,16 @@ export function ceoSystemPrompt(o: {
   hiring: 'approve' | 'auto';
   /** A harness without MCP: the office tools are a shell command (`<command> <tool> '<json>'`), listed in `catalog`. */
   shellTools?: { command: string; catalog: string };
+  /** True when the office runs in nano mode (floors are nano-workforce processes, no repository clones on disk). */
+  nano?: boolean;
   /** nano-workforce's agent skill (--nano): how to drive the nano-workforce app behind the office. */
   nanoSkill?: string;
 }) {
   const manager = o.manager ? `the manager, ${o.manager}` : 'the human manager';
+  // Nano-mode wording is driven by the mode itself, never by whether the skill happened to load: a transient
+  // `/agent/skill` outage must not flip the CEO into the non-nano branch that sends it reading clones that do not
+  // exist. A present skill implies nano mode (older callers pass only nanoSkill).
+  const isNano = o.nano || !!o.nanoSkill;
   return [
     `You are ${o.name}, the CEO of ${o.company || 'an autonomous software company'}, run from an office building called cubefarm. You work from the corner office in the lobby.`,
     `Every floor of the building is one GitHub repository with its own team of AI coding agents. Developers pick up GitHub issues, each in their own git worktree, and open pull requests. QA testers review and verify every pull request (code review, tests, build, and a real browser via Playwright); when every tester is busy, a free developer who didn't write the PR covers QA. On floors with auto-merge on, the office merges a PR by itself once QA passes and GitHub's checks are green, and sends failing checks or merge conflicts back to a developer; on the others, ${manager} merges. The manager is your board: they approve hires and let-gos.`,
@@ -279,13 +285,17 @@ export function ceoSystemPrompt(o: {
           `- The office tools are a shell command: ${o.shellTools.command} <tool> -b <base64url of the JSON arguments> (a JSON object; use -b e30 for none: e30 is base64url of {}). It prints the result, and exits non-zero when the office refuses, with the reason. Encode the JSON arguments yourself as base64url (standard base64 of the UTF-8 bytes, with + → -, / → _, and any = padding removed; letters, digits, - and _ only) and pass that literal string, never quoted JSON — do the encoding yourself, not through a shell pipeline, so it works the same in every shell. Every shell this may run in (cmd.exe, PowerShell, bash) passes a base64url string through unchanged, while quoting differs between them. Call company_status first: it lists every floor, its clone path, team, backlog, pull requests and your pending proposals.`,
           o.nanoSkill
             ? '- Nano mode keeps no repository clones: the floors are nano-workforce processes, so there is nothing to read on disk. Change things only through the office tools and the nano-workforce commands in the skill below; run nothing else that changes anything.'
-            : '- Read the repositories through their clone paths. They are read-only to you: run no other commands that change anything.',
+            : isNano
+              ? '- Nano mode keeps no repository clones: the floors are nano-workforce processes, so there is nothing to read on disk. Change things only through the office tools; run nothing else that changes anything.'
+              : '- Read the repositories through their clone paths. They are read-only to you: run no other commands that change anything.',
           `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time. ${o.notesFile} is the one file you may write directly — the restrictions above are about repository and company state, not your notes.`,
           o.nanoSkill ? '- Change things only through the office tools and the nano-workforce skill below.' : '- Change things only through the office tools.',
         ]
       : [
           '- Call mcp__office__company_status first. It lists every floor, its clone path, team, backlog, pull requests and your pending proposals.',
-          '- Read the repositories through their clone paths with Read, Glob and Grep. They are read-only to you. You cannot run shell commands.',
+          isNano
+            ? '- Nano mode keeps no repository clones: the floors are nano-workforce processes, so there is nothing to read on disk. You cannot run shell commands.'
+            : '- Read the repositories through their clone paths with Read, Glob and Grep. They are read-only to you. You cannot run shell commands.',
           `- Keep durable notes about the company in ${o.notesFile}: read it at the start, and update it at the end with decisions and anything worth remembering next time.`,
           '- Change things only through the mcp__office__ tools.',
         ]),
@@ -305,7 +315,9 @@ export function ceoSystemPrompt(o: {
     ...(o.shellTools ? ['', 'The office tools:', o.shellTools.catalog] : []),
     ...(o.nanoSkill
       ? ['', "The work itself is run by a nano-workforce app behind the office. Its agent skill, for the manager's requests about it:", '<nano-workforce-skill>', o.nanoSkill.trim(), '</nano-workforce-skill>']
-      : []),
+      : isNano
+        ? ['', "The work itself is run by a nano-workforce app behind the office, but its agent skill could not be loaded right now. Drive the company through the office tools, and tell the manager the nano-workforce skill was unavailable if they ask for something that needs it."]
+        : []),
   ].join('\n');
 }
 

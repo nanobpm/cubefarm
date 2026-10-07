@@ -2,10 +2,11 @@ import { useEffect, useId, useRef } from 'react';
 import type { NanoBoard, NanoShape, RepoView } from '../../../shared/types';
 import { useStore } from '../store';
 import { paintNanoBoard, useMinute } from '../world/NanoBoard';
+import { ago } from '../world/nanoDraw';
 import { Panel } from './Panel';
 
 /** Every state the canvas shows for a shape, joined: an incident step can still be held by a worker, so no early return. */
-function shapeState(s: NanoShape): string {
+function shapeState(s: NanoShape, now: number): string {
   const parts: string[] = [];
   if (s.incident) parts.push('incident');
   if (s.workers.length) parts.push(`worker: ${s.workers.join(', ')}`);
@@ -23,8 +24,14 @@ function shapeState(s: NanoShape): string {
       parts.push('waiting for an event or timer');
       break;
   }
-  // The canvas chips `● N` when several tokens sit on one shape; announce the count too, like `done ×N`.
-  if (s.active) parts.push(s.active > 1 ? `active ×${s.active}` : 'active');
+  // The canvas chips `● N` when several tokens sit on one shape; announce the count too, like `done ×N`. The canvas
+  // also paints the elapsed `since` under an active shape, so screen-reader users get that duration too (not just that
+  // it is active): a step just started reads very differently from one stuck for hours.
+  if (s.active) {
+    const label = s.active > 1 ? `active ×${s.active}` : 'active';
+    const dur = ago(s.since, now);
+    parts.push(dur ? `${label} for ${dur}` : label);
+  }
   if (s.done) parts.push(`done ×${s.done}`);
   return parts.length ? parts.join('; ') : 'not reached';
 }
@@ -33,7 +40,7 @@ function shapeState(s: NanoShape): string {
  * The same state the canvas paints, as text a screen reader can read: a canvas alone has no accessible contents, so
  * this structured list is what conveys the live board (step names, who's on them, what's waiting).
  */
-function NanoBoardSummary({ board, id }: { board: NanoBoard | undefined; id: string }) {
+function NanoBoardSummary({ board, id, now }: { board: NanoBoard | undefined; id: string; now: number }) {
   if (!board) return <div id={id} className="sr-only" />;
   if (board.kind === 'process') {
     return (
@@ -45,7 +52,7 @@ function NanoBoardSummary({ board, id }: { board: NanoBoard | undefined; id: str
         <ul>
           {board.shapes.map((s) => (
             <li key={s.id}>
-              {s.name}: {shapeState(s)}
+              {s.name}: {shapeState(s, now)}
             </li>
           ))}
         </ul>
@@ -65,12 +72,17 @@ function NanoBoardSummary({ board, id }: { board: NanoBoard | undefined; id: str
     <div id={id} className="sr-only">
       <h3>nano-workforce fleet</h3>
       <ul aria-label="Agent job types">
-        {board.types.map((t) => (
-          <li key={t.type}>
-            {t.type}: {t.held.length ? `held by ${t.held.map((h) => h.worker).join(', ')}` : 'none held'}
-            {t.queued.length ? `, ${t.queued.length} queued` : ''}
-          </li>
-        ))}
+        {board.types.map((t) => {
+          // Mirror the canvas chips, which show each held worker's elapsed time and the oldest queued wait.
+          const held = t.held.map((h) => (ago(h.since, now) ? `${h.worker} (${ago(h.since, now)})` : h.worker)).join(', ');
+          const queuedAgo = t.queued.length ? ago(Math.min(...t.queued.map((q) => q.since ?? now)), now) : '';
+          return (
+            <li key={t.type}>
+              {t.type}: {t.held.length ? `held by ${held}` : 'none held'}
+              {t.queued.length ? `, ${t.queued.length} queued${queuedAgo ? ` for ${queuedAgo}` : ''}` : ''}
+            </li>
+          );
+        })}
       </ul>
       <ul aria-label="Processes running">
         {board.processes.map((p, i) => (
@@ -111,7 +123,7 @@ export function NanoBoardView({ repo, embedded }: { repo: RepoView; embedded?: b
   const title = b?.kind === 'fleet' ? '🏭 nano-workforce fleet' : `⚙️ ${repo.fullName}`;
   const body = (
     <>
-      <NanoBoardSummary board={b} id={summaryId} />
+      <NanoBoardSummary board={b} id={summaryId} now={now} />
       <canvas
         ref={canvas}
         role="img"
