@@ -2295,7 +2295,7 @@ export class Swarm {
   /** What an agent is told on a task, previewed with placeholders for the task's details. */
   agentPrompt(id: string): AgentPromptView {
     const a = this.agent(id);
-    if (a.role === 'ceo') return ceoPromptPreview(ceoSystemPrompt(this.ceoPromptInput(a, this.ceoActiveHarness())));
+    if (a.role === 'ceo') return ceoPromptPreview(ceoSystemPrompt(this.ceoPromptInput(a, this.ceoActiveHarness(), undefined, true)));
     const repo = this.repo(a.repoId);
     const base = { agent: a, repo, port: this.port(a), slug: slugify(a.name) };
     return a.role === 'qa' ? qaPromptPreview(base) : devPromptPreview({ ...base, linked: this.linkedDirs(repo) });
@@ -3829,7 +3829,7 @@ export class Swarm {
     void this.runCeoJob(a, job);
   }
 
-  private ceoPromptInput(a: PersistedAgent, harness: CeoHarness, nanoSkill?: string): Parameters<typeof ceoSystemPrompt>[0] {
+  private ceoPromptInput(a: PersistedAgent, harness: CeoHarness, nanoSkill?: string, preview = false): Parameters<typeof ceoSystemPrompt>[0] {
     const s = this.state.settings;
     return {
       name: a.name,
@@ -3842,6 +3842,10 @@ export class Swarm {
       ...(harness !== 'claude' ? { shellTools: { command: officeCommand(), catalog: this.officeTools().catalog() } } : {}),
       ...(this.nano ? { nano: true } : {}),
       ...(nanoSkill ? { nanoSkill } : {}),
+      // The preview renders before a session fetches the runtime skill: mark it pending so the preview shows the
+      // skill as forthcoming rather than as a load failure. Never set in a real run, where a missing skill is a
+      // genuine fetch failure that must keep its fallback wording.
+      ...(preview && this.nano && !nanoSkill ? { nanoSkillPending: true } : {}),
     };
   }
 

@@ -311,6 +311,26 @@ describe('the CEO on another harness', () => {
     expect(p).toContain('Change things only through the office tools.');
   });
 
+  it('previews the runtime skill as pending, not as a load failure (nanoSkillPending)', () => {
+    // The manager's prompt preview renders before any session fetches the skill. It must not show the
+    // "could not be loaded" fallback (which would wrongly tell the manager the live CEO is skill-less and
+    // forbid nano-workforce commands); it shows the skill as forthcoming instead, matching the real session.
+    const shellTools = { command: 'node "/x/cubefarm-office.cjs"', catalog: '- company_status: everything' };
+    const p = ceoSystemPrompt({ ...base, shellTools, nano: true, nanoSkillPending: true });
+    expect(p).not.toContain('agent skill could not be loaded right now');
+    expect(p).toContain('<nano-workforce-skill>');
+    expect(p).toContain('nano-workforce commands in the skill below');
+    expect(p).toContain('Change things only through the office tools and the nano-workforce skill below.');
+    // A real fetched skill still wins over the placeholder.
+    const real = ceoSystemPrompt({ ...base, shellTools, nano: true, nanoSkill: '# real\n', nanoSkillPending: true });
+    expect(real).toContain('# real');
+    expect(real).not.toContain('fetched when your session starts');
+    // The MCP (claude) preview path too: pending drives nano wording even without shellTools.
+    const mcp = ceoSystemPrompt({ ...base, nano: true, nanoSkillPending: true });
+    expect(mcp).toContain('<nano-workforce-skill>');
+    expect(mcp).not.toContain('agent skill could not be loaded right now');
+  });
+
   it('drives the nano clone-reading wording even on the MCP (claude) harness', () => {
     // The non-shell branch must also respect nano mode: the preview path can render it with the claude harness.
     const nano = ceoSystemPrompt({ ...base, nano: true });
